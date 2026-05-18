@@ -5,10 +5,11 @@ description: One-time setup for the Cloudup plugin — pick a wallet path (Privy
 
 # /cloudup-setup
 
-One-time setup. Two wallet paths to pick from:
+One-time setup. Three wallet paths to pick from:
 
 - **Privy agent wallet** (recommended): managed wallet, browser login, signing key never leaves Privy's wallet service.
 - **Locally generated key**: a fresh secp256k1 key generated on this machine and stored in the macOS Keychain.
+- **Bring your own key**: import an existing private key (e.g. one shared by your team, or exported from another machine) into the macOS Keychain via a secure-paste prompt.
 
 The CI / headless `CLOUDUP_WALLET_KEY` path is not offered here — that's a build-agent flow, see the README.
 
@@ -20,6 +21,7 @@ The CI / headless `CLOUDUP_WALLET_KEY` path is not offered here — that's a bui
    - **Options**:
      - **"Privy agent wallet (Recommended)"** — Managed by Privy. Browser-based login. The signing key stays in Privy's service; only a per-user authorization keypair lives on this machine (in the OS keychain).
      - **"Locally generated key"** — A fresh secp256k1 key generated on this machine and stored in the macOS Keychain. macOS only today. You hold the key; back it up accordingly.
+     - **"Bring your own key"** — Import an existing private key (e.g. shared by your team, or exported from another machine) into the macOS Keychain. macOS only today. The paste happens in a separate terminal so the key never crosses Claude.
 
 2. Follow the matching branch below based on the user's selection.
 
@@ -68,6 +70,33 @@ The CI / headless `CLOUDUP_WALLET_KEY` path is not offered here — that's a bui
      - https://portal.cdp.coinbase.com/products/faucet (ETH + USDC, fallback)
    - Restart Claude Code so the MCP server picks up the key at session start.
    - The key lives in Keychain only on this machine. If they want to use the same wallet from another laptop, they'll need to either export/import via `cloudup-key.sh show` / `cloudup-key.sh set` or run Privy on the other machine instead.
+
+---
+
+### Branch C — Bring your own key
+
+1. Check the platform via Bash: `uname -s`. If it doesn't return `Darwin`, tell the user this path is **macOS only today** (the helper uses the macOS Keychain) and recommend Branch A (Privy) instead. Stop here.
+2. Check whether a key is already stored: `"$CLAUDE_PLUGIN_ROOT/scripts/cloudup-key.sh" status`.
+   - If it prints `Key stored in macOS Keychain (cloudup/wallet).`, a key already exists. Run `"$CLAUDE_PLUGIN_ROOT/scripts/cloudup-key.sh" address` to print the funded address, and tell the user setup is done — they only need to restart Claude Code if this is the first time the plugin's been wired up. Stop here.
+   - If it prints `No key stored.`, proceed to step 3.
+3. Tell the user to import their key themselves, **in a regular terminal window outside Claude Code**, so the key never enters this Claude session's transcript, shell history, or process arguments:
+   ```
+   "$CLAUDE_PLUGIN_ROOT/scripts/cloudup-key.sh" set
+   ```
+   (Print the absolute path to the script so they can paste it directly. Get the path by running `echo "$CLAUDE_PLUGIN_ROOT/scripts/cloudup-key.sh"` via Bash.)
+
+   The script will prompt silently via the macOS Keychain helper (`security add-generic-password ... -U -w`). The user pastes the 0x-prefixed private key, hits Enter, and the key is stored under service `cloudup` / account `wallet`. The key never appears in argv, shell history, or the Claude transcript.
+
+   Running `cloudup-key.sh set` (no argument) via the `! …` prompt inside Claude Code refuses to prompt — it requires a TTY by design. A regular terminal works.
+
+   Wait for the user to confirm import completed.
+4. Verify the import: run `"$CLAUDE_PLUGIN_ROOT/scripts/cloudup-key.sh" status` and `"$CLAUDE_PLUGIN_ROOT/scripts/cloudup-key.sh" address`. Print the derived address back to the user. If `address` fails, the pasted value was malformed — tell them to run `cloudup-key.sh remove` then repeat step 3.
+5. Tell the user:
+   - Fund this address with **Base Sepolia USDC** for the current (staging) endpoint, unless someone has already funded the shared wallet. Faucets:
+     - https://faucet.circle.com/ (USDC-only, primary)
+     - https://portal.cdp.coinbase.com/products/faucet (ETH + USDC, fallback)
+   - Restart Claude Code so the MCP server picks up the key at session start.
+   - If the key is shared (e.g. a team wallet), be aware that anyone with the key can drain the funded balance — keep `CLOUDUP_MAX_USD` set conservatively.
 
 ---
 

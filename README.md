@@ -21,7 +21,7 @@ In a Claude Code session:
 
 ### 2. Provision a wallet
 
-Three paths; `/cloudup-setup` walks you through A or B interactively. C is the build-agent escape hatch.
+Four paths; `/cloudup-setup` walks you through A, B, or D interactively. C is the build-agent escape hatch.
 
 #### Path A — Privy agent wallet (recommended)
 
@@ -44,9 +44,27 @@ Run `/cloudup-setup` in Claude Code and pick **Locally generated key**. It runs 
 ```
 scripts/cloudup-key.sh status     # is a key stored?
 scripts/cloudup-key.sh address    # print the wallet address
-scripts/cloudup-key.sh show       # print the private key (use with care)
 scripts/cloudup-key.sh remove     # delete the key from Keychain
+scripts/cloudup-key.sh set        # import an existing key (interactive paste, see Path D)
 ```
+
+The script has no `show` subcommand by design — printing a raw private key from a CLI is a great way to leak it into shell history, scrollback, or (worst case) a Claude Code transcript that gets sent off-box. If you really need the raw key (e.g. to copy to another laptop), call the Keychain directly: `security find-generic-password -s cloudup -a wallet -w`.
+
+#### Path D — Bring your own key (macOS, laptop, shared/exported key)
+
+Use this when you already have a private key you want to use — typically a team-shared test wallet that someone has funded centrally, or a key you exported from another laptop. The key lives in the macOS Keychain alongside the Path B key (same slot), so the wrapper and management subcommands treat both identically.
+
+Run `/cloudup-setup` in Claude Code and pick **Bring your own key**. It tells you to open a separate terminal and run:
+
+```
+scripts/cloudup-key.sh set
+```
+
+With no argument, `set` delegates to the macOS Keychain helper (`security add-generic-password ... -U -w`), which prompts silently for the key on the TTY. You paste your 0x-prefixed private key, hit Enter, and it's stored under service `cloudup` / account `wallet`. The key never enters argv (so it won't show in `ps`), shell history, the Claude transcript, or any log file.
+
+`cloudup-key.sh set` refuses to run without a TTY — so attempting to invoke it from Claude's bash tool (`! …`) errors out by design. Always run it in a regular terminal window.
+
+Programmatic callers that already have the key in memory (CI scripts, tests) can still pass it as an argument: `cloudup-key.sh set 0xabc…`. That accepts brief argv exposure as the caller's trade-off and is not appropriate for interactive paste.
 
 #### Path C — `CLOUDUP_WALLET_KEY` env var (CI, headless, TeamCity)
 
@@ -58,7 +76,7 @@ export CLOUDUP_WALLET_KEY=0x...   # a fresh secp256k1 key you generated
 
 The wrapper skips Privy and Keychain entirely and signs locally with viem. Keep the funded balance thin (each upload ≤ `CLOUDUP_MAX_USD`); a leaked key drains exactly what you funded.
 
-**Signer precedence in the wrapper:** if `CLOUDUP_WALLET_KEY` is set it wins (CI path). Otherwise a Keychain-stored key wins if present (Path B). Otherwise the wrapper falls back to `paw` (Path A). Switching between B and A on the same machine requires removing the previous one's state first — `scripts/cloudup-key.sh remove` to drop the Keychain key, or clear the paw session.
+**Signer precedence in the wrapper:** if `CLOUDUP_WALLET_KEY` is set it wins (CI path). Otherwise a Keychain-stored key wins if present (Path B or D — same slot, indistinguishable to the wrapper). Otherwise the wrapper falls back to `paw` (Path A). Switching between Keychain-based paths and A on the same machine requires removing the previous one's state first — `scripts/cloudup-key.sh remove` to drop the Keychain key, or clear the paw session.
 
 ### 3. Fund the wallet with USDC
 
@@ -76,6 +94,7 @@ For Path A, `paw fund` opens Privy's funding flow in a browser. For Paths B and 
 | `CLOUDUP_MAX_USD` | `0.30` | Spending cap per upload — refuses to sign above this. Default covers the `large` SKU (`begin_upload`, $0.25) with a small margin; raise if pricing changes upstream. |
 | `CLOUDUP_MCP_URL` | `https://api.stage-cloudup.com/mcp/public` | Server endpoint (swap for prod when available) |
 | `CLOUDUP_WALLET_KEY` | _(unset)_ | Path C selector. If set to a `0x…` private key, skip both `paw` and Keychain and sign locally with viem. Use for CI / headless agents only. |
+| `CLOUDUP_PROXY` | _(unset)_ | Outbound proxy passed to mpp-remote as `--proxy <value>`. Leave unset for external users. A8c users on the staging endpoint set this to `socks5h://127.0.0.1:8080` (the conventional `ssh -D 8080 <bastion>` forwarder). See "Reaching the staging endpoint" below. |
 
 ### 5. Remove any duplicate manual cloudup MCP
 
@@ -112,15 +131,38 @@ You only need USDC — no ETH for gas. The server submits the meta-transaction o
 
 ## Reaching the staging endpoint (A8c-only for now)
 
-`v0.1` ships against the Cloudup **staging** endpoint, which is IP-restricted to the Automattic network. The plugin handles this automatically by passing `--proxy socks5h://127.0.0.1:8080` to mpp-remote — the conventional A8c SOCKS5 forwarder (`ssh -D 8080 <a8c-bastion>`). Keep that SSH tunnel up and the plugin will route upstream calls through it.
+The current default endpoint (`api.stage-cloudup.com`) is IP-restricted to the Automattic network. To reach it from a laptop, set `CLOUDUP_PROXY` in your shell environment **before** starting Claude Code (the wrapper reads it at MCP launch):
 
-`socks5h://` (not `socks5://`) is used so DNS resolution happens server-side — internal cloudup hostnames may not be resolvable from your machine.
+```
+export CLOUDUP_PROXY=socks5h://127.0.0.1:8080
+```
+
+That's the conventional A8c SOCKS5 forwarder (`ssh -D 8080 <a8c-bastion>`). Keep the SSH tunnel up and the plugin will route upstream calls through it.
+
+Use `socks5h://` rather than `socks5://` so DNS resolution happens server-side — internal cloudup hostnames may not be resolvable from your machine.
+
+`CLOUDUP_PROXY` is **opt-in**. External users (or A8c users hitting a public endpoint when one exists) leave it unset and traffic goes direct.
 
 ## Caveats
 
 External developers can install the plugin but will not be able to reach the server until a public/prod endpoint is available. Prod endpoint and a `/cloudup-balance` command are planned for v0.3.
 
 ## Version
+
+`0.5.0` — Adds Path D (Bring your own key) for importing an existing private key into the macOS Keychain via a secure-paste flow:
+
+- **`cloudup-key.sh set` with no argument** now delegates to the macOS Keychain helper's interactive `-w` prompt — the key never enters argv, shell history, or the Claude transcript. Refuses to run without a TTY, so accidental invocation from Claude's bash tool fails safely.
+- **`/cloudup-setup` gains a "Bring your own key" branch** that walks the user through running `cloudup-key.sh set` in a separate terminal and verifying the import.
+- The existing `cloudup-key.sh set 0x...` (argv form) is preserved for programmatic callers; it's documented as inappropriate for interactive paste.
+- No wrapper changes — Path D keys land in the same Keychain slot as Path B, so signer precedence and runtime behavior are unchanged.
+
+`0.4.0` — Security and extensibility cleanup on top of 0.3.0's three signer paths:
+
+- **`viem` is pinned** to a specific version in `scripts/cloudup-key.sh` (previously `latest`), so a malicious upstream release cannot ride along into the process that handles the private key.
+- **The private key is passed to `node -e` via an env var**, not as an argv string, so it no longer appears in `ps` listings.
+- **`cloudup-key.sh show` is gone** — printing a raw private key from a CLI made it too easy to leak into shell history, scrollback, or a Claude Code transcript. Use `security find-generic-password -s cloudup -a wallet -w` directly if you really need it.
+- **The SOCKS proxy is opt-in** via `CLOUDUP_PROXY` (previously hardcoded to `socks5h://127.0.0.1:8080`). External users can now actually hit a public endpoint when one exists; A8c users set the env var. **Breaking change for existing A8c users — see "Reaching the staging endpoint."**
+- **The upload skill has a stronger sensitive-content gate** — agents must describe the image and confirm before paying, with explicit carve-outs only for agent-captured public-URL screenshots and user-named files.
 
 `0.3.0` — Three signer paths, picked at MCP launch in this precedence order:
 **Path C** (`CLOUDUP_WALLET_KEY` env var, CI / headless) → **Path B** (macOS Keychain, locally-generated key, managed by `scripts/cloudup-key.sh`) → **Path A** (Privy agent-wallet CLI, browser login). `/cloudup-setup` is now a chooser between A and B; C is documented in the README as the build-agent path. Path B is the v0.1 Keychain helper restored — it was dropped in 0.2.0 when Privy became the only laptop path, and is back so users who don't want third-party custody have a managed-on-machine option.
