@@ -137,9 +137,15 @@ fi
 
 export MPP_MAX_AMOUNT_USD="${CLOUDUP_MAX_USD:-0.20}"
 
-# Cloudup staging is IP-restricted to the A8c network, so we route upstream
-# traffic through the conventional A8c SOCKS5 forwarder on localhost:8080
-# (typically `ssh -D 8080 <bastion>`).
+# Opt-in proxy. The Cloudup staging endpoint is IP-restricted to the A8c
+# network, so A8c users typically set CLOUDUP_PROXY=socks5h://127.0.0.1:8080
+# (the conventional `ssh -D 8080 <bastion>` forwarder). External users hit
+# the public endpoint directly and leave CLOUDUP_PROXY unset.
+PROXY_ARGS=()
+if [ -n "${CLOUDUP_PROXY:-}" ]; then
+    PROXY_ARGS=(--proxy "$CLOUDUP_PROXY")
+fi
+
 exec "$NPX" -y github:tellyworth/mpp-remote \
-    --proxy socks5h://127.0.0.1:8080 \
+    ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} \
     "${CLOUDUP_MCP_URL:-https://api.stage-cloudup.com/mcp/public}"
