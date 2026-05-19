@@ -1,5 +1,5 @@
 {
-  "name": "cloudup-plugin",
+  "name": "cloudup-claude-code",
   "description": "Cloudup x402 upload plugin for Claude Code",
   "owner": {
     "name": "Steve Dufresne",
