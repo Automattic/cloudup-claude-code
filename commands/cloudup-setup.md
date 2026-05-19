@@ -1,6 +1,6 @@
 ---
 name: cloudup-setup
-description: One-time setup for the Cloudup plugin — pick a wallet path (Privy or locally generated) and walk through it.
+description: One-time setup for the Cloudup plugin — pick a wallet path (Privy, locally generated, or bring-your-own) and walk through it. Re-run after setup to verify the whole stack with a small test upload.
 ---
 
 # /cloudup-setup
@@ -14,6 +14,14 @@ One-time setup. Three wallet paths to pick from:
 The CI / headless `CLOUDUP_WALLET_KEY` path is not offered here — that's a build-agent flow, see the README.
 
 ## Instructions
+
+**First, check whether a wallet is already configured.** Run these in order via Bash; if any returns positive, the user already has a wallet — skip the branch flow below and jump straight to the [Verify](#verify) section to confirm the existing setup works:
+
+- `printenv CLOUDUP_WALLET_KEY` — non-empty? CI / env-var path is configured (highest precedence; if set, the wrapper ignores the others).
+- `"$CLAUDE_PLUGIN_ROOT/scripts/cloudup-key.sh" status` — prints `Key stored in macOS Keychain (cloudup/wallet).`? Keychain path is configured (Branch B or C below).
+- `command -v paw` succeeds **and** `paw list-wallets` prints an `Ethereum: 0x…` line? Privy path is configured.
+
+Note the active path; you'll mention it in the Verify report. If none of the checks hit, the user needs to provision a wallet — continue with step 1 below.
 
 1. Ask the user which path they want to use, via `AskUserQuestion`:
    - **Question**: "Which wallet do you want to set up?"
@@ -54,6 +62,7 @@ The CI / headless `CLOUDUP_WALLET_KEY` path is not offered here — that's a bui
 5. Re-run `paw list-wallets` to confirm. Print the Ethereum address and tell the user:
    - Fund this address with **Base Sepolia USDC** for the current (staging) endpoint. They can use `paw fund` to open the on-ramp, or any Base Sepolia faucet.
    - Restart Claude Code so the MCP server picks up the new wallet at session start.
+   - Then re-run `/cloudup-setup`. It'll detect the wallet and run a small end-to-end test upload to confirm everything's working.
 
 ---
 
@@ -69,6 +78,7 @@ The CI / headless `CLOUDUP_WALLET_KEY` path is not offered here — that's a bui
      - https://faucet.circle.com/ (USDC-only, primary)
      - https://portal.cdp.coinbase.com/products/faucet (ETH + USDC, fallback)
    - Restart Claude Code so the MCP server picks up the key at session start.
+   - Then re-run `/cloudup-setup`. It'll detect the wallet and run a small end-to-end test upload to confirm everything's working.
    - The key lives in Keychain only on this machine. If they want to use the same wallet from another laptop, they'll need to either export/import via `cloudup-key.sh show` / `cloudup-key.sh set` or run Privy on the other machine instead.
 
 ---
@@ -96,7 +106,38 @@ The CI / headless `CLOUDUP_WALLET_KEY` path is not offered here — that's a bui
      - https://faucet.circle.com/ (USDC-only, primary)
      - https://portal.cdp.coinbase.com/products/faucet (ETH + USDC, fallback)
    - Restart Claude Code so the MCP server picks up the key at session start.
+   - Then re-run `/cloudup-setup`. It'll detect the wallet and run a small end-to-end test upload to confirm everything's working.
    - If the key is shared (e.g. a team wallet), be aware that anyone with the key can drain the funded balance — keep `CLOUDUP_MAX_USD` set conservatively.
+
+---
+
+## Verify
+
+Reached automatically when the detection block at the top of Instructions finds an existing wallet. Runs a small end-to-end test upload to confirm the whole stack — proxy/tunnel, MCP, signer, x402 verify, server settle, S3 — is wired up correctly. For Automattic staff on staging, the test upload also exercises (and pre-warms) the server-side auto-fund, so the user's first real upload after this won't pay the ~2s cold-call latency.
+
+1. **Look up the wallet address** where possible, so the report can include it:
+   - Privy: `paw list-wallets` → grep the `Ethereum: 0x…` line.
+   - Keychain (Branch B or C): `"$CLAUDE_PLUGIN_ROOT/scripts/cloudup-key.sh" address`.
+   - `CLOUDUP_WALLET_KEY` env: skip — the address isn't directly derivable without web3 tooling the plugin doesn't ship. Just note "configured via `CLOUDUP_WALLET_KEY`" in the report.
+
+2. **Call the test upload** via the cloudup MCP server's `quick_upload` tool (cheapest SKU, $0.01, 30-day retention). Pass this literal 1×1 transparent PNG as `content_base64` — it's the smallest valid PNG (96 chars base64) and is embedded inline so nothing extra needs shipping:
+   ```
+   content_base64: iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkAAIAAAoAAv/lxKUAAAAASUVORK5CYII=
+   alt: cloudup-setup-verify
+   ```
+   For Automattic staff on staging this charge is covered by the server's auto-fund treasury — the user's wallet doesn't have to be pre-funded.
+
+3. **On success** (the response includes `direct_url` and `markdown`):
+   - Report briefly: active signer path, wallet address (if obtained in step 1), and the `direct_url` of the test image. Tell the user setup is complete and uploads will work from now on. Keep it short — they're done.
+
+4. **On failure**, surface a targeted next step rather than the raw error:
+   - **Tool not found / MCP server not connected** → the wrapper couldn't start. Common causes:
+     - A duplicate manually-configured MCP server is suppressing the plugin's — have them run `claude mcp list` and remove any `cloudup-*` entry. See README §5.
+     - Automattic staff: the SOCKS tunnel isn't up. They need `ssh -D 8080 <bastion>` running on `localhost:8080` and `CLOUDUP_PROXY=socks5h://127.0.0.1:8080` set in the shell that launched Claude. See README §"Reaching the staging endpoint".
+     - The wrapper script errored out — re-running `/cloudup-setup` once Claude is restarted should surface the wrapper's stderr.
+   - **"Insufficient balance" / `invalid_exact_evm_insufficient_balance`** → on the default staging endpoint this should auto-resolve via the server's staff-wallet auto-fund. A single retry is acceptable (the funding tx can briefly lag the facilitator's verify on the cold call). If it persists and the error includes "Staff treasury depleted, ping #cloudup-eng", surface that message verbatim — funding is an operational task for the cloudup-eng team. On non-staging endpoints, point at funding (README §3 / `paw fund` / faucet).
+   - **"Spending cap exceeded"** → `CLOUDUP_MAX_USD` is below the `quick` SKU's $0.01, which is well below the default $0.30. Someone lowered it; tell them to raise it.
+   - **Other errors** → surface the message verbatim with a note that this is unexpected. Suggest they ping `#cloudup-eng` with the error string and the active signer path.
 
 ---
 
