@@ -135,7 +135,7 @@ fi
 
 # ---- exec mpp-remote -----------------------------------------------------
 
-export MPP_MAX_AMOUNT_USD="${CLOUDUP_MAX_USD:-0.20}"
+export MPP_MAX_AMOUNT_USD="${CLOUDUP_MAX_USD:-0.30}"
 
 # Opt-in proxy. The Cloudup staging endpoint is IP-restricted to the A8c
 # network, so A8c users typically set CLOUDUP_PROXY=socks5h://127.0.0.1:8080

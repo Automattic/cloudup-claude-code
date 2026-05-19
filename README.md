@@ -15,8 +15,8 @@ Upload images to Cloudup directly from Claude Code, paying per upload with x402 
 In a Claude Code session:
 
 ```
-/plugin marketplace add StevenDufresne/cloudup-plugin
-/plugin install cloudup@cloudup-plugin
+/plugin marketplace add Automattic/cloudup-claude-code
+/plugin install cloudup@cloudup-claude-code
 ```
 
 ### 2. Provision a wallet
