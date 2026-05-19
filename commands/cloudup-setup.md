@@ -13,6 +13,8 @@ One-time setup. Three wallet paths to pick from:
 
 The CI / headless `CLOUDUP_WALLET_KEY` path is not offered here — that's a build-agent flow, see the README.
 
+> **Automattic staff:** skip the funding step in your chosen branch — the staging server tops up low-balance staff wallets with testnet USDC automatically on upload. The first call from a fresh wallet takes ~2s extra while the top-up settles; subsequent calls are unaffected. External users and non-staging endpoints fund manually as documented in each branch.
+
 ## Instructions
 
 1. Ask the user which path they want to use, via `AskUserQuestion`:

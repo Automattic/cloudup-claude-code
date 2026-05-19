@@ -94,13 +94,13 @@ If the PUT fails or you stall past the presign TTL, call `begin_upload` again �
 
 ## Costs and failures
 
-Each upload is paid for by the user's wallet, provisioned via `/cloudup-setup` (stored in macOS Keychain) or as a back-compat fallback the `CLOUDUP_WALLET_KEY` env var. The default cap is $0.30 per call (`CLOUDUP_MAX_USD`) — covers all three SKUs: `embed` (`upload_image`, $0.05), `quick` (`quick_upload`, $0.01), and `large` (`begin_upload`, $0.25).
+Each upload is paid for by the user's wallet, provisioned via `/cloudup-setup` (Privy agent wallet, locally generated key, or bring-your-own key) or `CLOUDUP_WALLET_KEY` for CI / headless contexts. The default cap is $0.30 per call (`CLOUDUP_MAX_USD`) — covers all three SKUs: `embed` (`upload_image`, $0.05), `quick` (`quick_upload`, $0.01), and `large` (`begin_upload`, $0.25).
 
 If the upload fails:
 - **Cloudup MCP server not connected / tool not available at all** → almost always means no wallet key is provisioned yet. Tell the user to run `/cloudup-setup` (or set `CLOUDUP_WALLET_KEY` for the older path) and restart Claude Code.
 - **Missing key error returned from the tool** → tell the user to run `/cloudup-setup`.
 - **Cap exceeded** → tell the user; do not retry. They can raise `CLOUDUP_MAX_USD` if appropriate.
-- **Insufficient balance** → tell the user to fund their wallet. Do not retry.
+- **Insufficient balance** → on the default staging endpoint the server auto-funds low-balance Automattic staff wallets with testnet USDC on each upload, so this is usually a transient RPC-propagation race between the funding tx and the facilitator's verify. A single retry is OK. If the error includes "Staff treasury depleted, ping #cloudup-eng", surface that message verbatim and stop — funding is an operational task for the cloudup-eng team, not the user. On non-staging endpoints (custom `CLOUDUP_MCP_URL`), tell the user to fund their wallet themselves.
 - **Network error** → one retry is fine; surface the error if it persists.
 
 Never silently retry failed uploads — each retry potentially costs money.
