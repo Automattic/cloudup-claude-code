@@ -22,7 +22,7 @@ The server is registered under the plugin-namespaced name `plugin:cloudup:cloudu
 
 ## Before uploading: the sensitive-content check
 
-Cloudup uploads are **public, paid, and effectively irreversible** — the hotlink lives for 90 days, the URL is unguessable but unauthenticated, there is no recall API, and the user has already been charged when you find out you shouldn't have uploaded. Treat every upload like posting to a public GitHub comment.
+Cloudup uploads are **public, paid, and effectively irreversible** — the URL is unguessable but unauthenticated, there is no recall API, the user has already been charged when you find out you shouldn't have uploaded, and the file lives for 30 days to 2 years depending on SKU (`embed` retains for 2 years, `quick` / `large` for 30 days). Treat every upload like posting to a public GitHub comment.
 
 **Before calling the upload tool**, you must:
 
