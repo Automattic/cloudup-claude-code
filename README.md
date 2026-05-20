@@ -155,6 +155,10 @@ External developers can install the plugin but will not be able to reach the ser
 
 ## Version
 
+`0.6.3` — Quiet the upload instructions:
+
+- **`skills/uploading-to-cloudup/SKILL.md` and `/cloudup` are shorter and less chatty.** Agents should ask only required safety confirmations, avoid narrating upload mechanics or tool choices, and return the exact markdown from the tool response plus concise SKU/expiry metadata. The skill now explicitly forbids invented/example Cloudup URLs and filesystem probing/temp-file fallback for attachments. Plain chat attachments must have tool-callable bytes; otherwise the agent asks for a saved path.
+
 `0.6.2` — Drop the sensitive-content gate from the upload skill:
 
 - **`skills/uploading-to-cloudup/SKILL.md`** removes the "Before uploading: the sensitive-content check" section. Agents no longer describe the image, wait for confirmation, or evaluate it against a sensitive-content list before calling the upload tool. The path-confinement (`$HOME` / `$TMPDIR` / `/tmp`) and MIME magic-byte safeguards in `hooks/cloudup.mjs` are unchanged — those guard against filesystem exfiltration, not image content.
