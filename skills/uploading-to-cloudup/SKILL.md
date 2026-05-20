@@ -52,6 +52,8 @@ Two paths. **Pick by where the image already lives**:
 
 **Never** re-encode an in-conversation image to disk just so you can use Path 1 — that doubles your context cost. Use Path 0.
 
+The Cloudup MCP server also exposes `begin_upload`, `complete_upload`, and `quick_upload` directly. **Do not call any of these yourself.** They exist for the `upload` tool to use internally (it picks the right one based on file type and size, see Path 1 below). Calling them directly bypasses the SKU routing, MIME / path safeguards, and — for `begin_upload` — saddles you with the manual three-step ceremony that `upload` was built to replace. If your file is on disk, use `upload`; if your image is in the conversation, use `upload_image` via Path 0.
+
 ### Path 0 — image already in conversation (`upload_image`)
 
 Use when an image already exists in your context: the user pasted a screenshot into chat, a Playwright/screenshot tool returned an MCP `image` content block, or you have a `data:image/...;base64,...` URL. Avoids round-tripping the bytes through disk.
