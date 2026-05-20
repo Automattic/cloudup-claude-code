@@ -141,6 +141,25 @@ export MPP_MAX_AMOUNT_USD="${CLOUDUP_MAX_USD:-0.30}"
 # network, so A8c users typically set CLOUDUP_PROXY=socks5h://127.0.0.1:8080
 # (the conventional `ssh -D 8080 <bastion>` forwarder). External users hit
 # the public endpoint directly and leave CLOUDUP_PROXY unset.
+#
+# Auto-detect: when no CLOUDUP_PROXY is set AND we're pointing at the A8c
+# staging endpoint, probe 127.0.0.1:8080. If something is listening it's
+# almost certainly the conventional `ssh -D 8080 <bastion>` forwarder, so
+# route through it. External users on the public endpoint don't match the
+# staging-URL gate and are unaffected.
+EFFECTIVE_URL="${CLOUDUP_MCP_URL:-https://api.stage-cloudup.com/mcp/public}"
+# Extract just the hostname so a weird URL like
+# https://attacker.example/?x=stage-cloudup.com can't trip the gate.
+EFFECTIVE_HOST="${EFFECTIVE_URL#*://}"   # strip scheme
+EFFECTIVE_HOST="${EFFECTIVE_HOST%%/*}"   # strip /path
+EFFECTIVE_HOST="${EFFECTIVE_HOST##*@}"   # strip optional userinfo
+EFFECTIVE_HOST="${EFFECTIVE_HOST%%:*}"   # strip optional :port
+if [ -z "${CLOUDUP_PROXY:-}" ] && \
+   [[ "$EFFECTIVE_HOST" == "stage-cloudup.com" || "$EFFECTIVE_HOST" == *.stage-cloudup.com ]]; then
+    if (: < /dev/tcp/127.0.0.1/8080) 2>/dev/null; then
+        CLOUDUP_PROXY="socks5h://127.0.0.1:8080"
+    fi
+fi
 PROXY_ARGS=()
 if [ -n "${CLOUDUP_PROXY:-}" ]; then
     PROXY_ARGS=(--proxy "$CLOUDUP_PROXY")
