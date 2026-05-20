@@ -10,6 +10,8 @@ Upload images to Cloudup directly from Claude Code, paying per upload with x402 
 
 ## Setup
 
+Requires Node.js ≥ 18 (the `upload` hook uses global `fetch` and streaming PUT, both Node 18+). On Node 16 the hook crashes with `ReferenceError: fetch is not defined` mid-upload.
+
 ### 1. Install the plugin
 
 In a Claude Code session:
@@ -95,6 +97,7 @@ For Path A, `paw fund` opens Privy's funding flow in a browser. For Paths B and 
 | `CLOUDUP_MCP_URL` | `https://api.stage-cloudup.com/mcp/public` | Server endpoint (swap for prod when available) |
 | `CLOUDUP_WALLET_KEY` | _(unset)_ | Path C selector. If set to a `0x…` private key, skip both `paw` and Keychain and sign locally with viem. Use for CI / headless agents only. |
 | `CLOUDUP_PROXY` | _(unset)_ | Outbound proxy passed to mpp-remote as `--proxy <value>`. Leave unset for external users. A8c users on the staging endpoint set this to `socks5h://127.0.0.1:8080` (the conventional `ssh -D 8080 <bastion>` forwarder). See "Reaching the staging endpoint" below. |
+| `CLOUDUP_ALLOWED_MIME` | `image/*` | Comma-separated MIME allowlist enforced by the `upload` tool's magic-byte sniff. Default accepts any image (PNG, JPEG, GIF, BMP, WebP, AVIF, HEIC). Narrow to tighten (e.g. `image/png` for screenshot-only flows). Widen with care — `*/*` disables the safeguard, the point of which is to refuse a text file renamed `id_rsa.png`. Common widening is `image/*,video/mp4,video/webm` for clip uploads. |
 
 ### 5. Remove any duplicate manual cloudup MCP
 
