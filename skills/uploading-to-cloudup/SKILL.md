@@ -43,17 +43,16 @@ The whole point of confirming is that you may be wrong about what's in the image
 
 ## How to use
 
-The server exposes three upload paths. **Pick by where the image already lives**, then (for on-disk images) by size:
+Two paths. **Pick by where the image already lives**:
 
 | Where's the image? | Path |
 |---|---|
 | Already in the conversation (pasted screenshot, MCP `image` block from another tool, or a `data:` URL) | Path 0 |
-| On disk, small (under ~60 KB binary / ~80 KB base64) | Path A |
-| On disk, larger | Path B |
+| On disk (any size) | Path 1 |
 
-**Never** re-encode an in-conversation image to disk just to fit Path A — that doubles your context cost. Use Path 0.
+**Never** re-encode an in-conversation image to disk just so you can use Path 1 — that doubles your context cost. Use Path 0.
 
-### Path 0 — image already in conversation (`upload_image` with `image` or `image_data_url`)
+### Path 0 — image already in conversation (`upload_image`)
 
 Use when an image already exists in your context: the user pasted a screenshot into chat, a Playwright/screenshot tool returned an MCP `image` content block, or you have a `data:image/...;base64,...` URL. Avoids round-tripping the bytes through disk.
 
@@ -64,40 +63,41 @@ Use when an image already exists in your context: the user pasted a screenshot i
    - `image: <the content block, verbatim>` — when you have an MCP image block.
    - `image_data_url: "<the data URL string>"` — when you have a data URL.
 3. Pass `alt` if you want explicit alt text; otherwise the server derives it from the filename (defaults to `screenshot-YYYYMMDDHHMMSS.<ext>` here).
-4. The response shape is the same as Path A: `direct_url`, `markdown`, `content_type`, `size_bytes`, `sku`, `expires_at`.
+4. The response shape matches Path 1: `direct_url`, `markdown`, `content_type`, `size_bytes`, `sku`, `expires_at`.
 
 Do not pass `content_base64` alongside `image` or `image_data_url` — exactly one input mode is allowed per call. The server sniffs the actual MIME from the decoded bytes regardless of what `mimeType` or the data URL claims, so non-image content gets rejected with `invalid_request`.
 
-### Path A — `upload_image` / `quick_upload` (inline base64)
+### Path 1 — file on disk (`upload`)
 
-Use when the file is on disk and small enough that you can read it without hitting your tooling's read limits. As a rule of thumb in Claude Code: under ~60 KB binary (~80 KB base64) is safely Read-able. Above that, switch to Path B.
+Use for any image already saved on disk. One tool call handles the whole upload — no separate Read, no curl PUT, no `begin_upload`/`complete_upload` ceremony.
 
-1. Identify the absolute path to the local image file (e.g. `/tmp/screenshot.png`).
-2. Call the upload tool from the `plugin:cloudup:cloudup` MCP server. The runtime exposes tools using the namespace-normalized form: typically `mcp__plugin_cloudup_cloudup__upload_image` (colons replaced with underscores). If that exact name isn't surfaced, discover the right one from the available tools list — look for an `upload_image` or `quick_upload` tool under the cloudup-prefixed server. For non-image files, use `quick_upload` on the same server. `quick_upload` accepts the same three input modes as `upload_image` (`content_base64`, an MCP `image` content block, or an `image_data_url`), so it works equivalently for inline payloads when you want the cheaper / shorter-retention `quick` SKU.
-3. The tool returns a JSON response containing `direct_url` (the hotlink), `markdown` (ready-to-paste GH-flavored markdown), `content_type`, `size_bytes`, `sku`, and `expires_at`.
+1. Identify the absolute path to the local image file (e.g. `/tmp/screenshot.png` or `~/Pictures/foo.heic`).
+2. Call `mcp__plugin_cloudup_cloudup__upload` with `path: "<absolute path>"`. Optional: `stream_id` to append to an existing Cloudup stream, or `stream_title` to name a new one.
+3. The bridge reads the file, picks the cheapest applicable SKU automatically (`quick` for files under ~50 KB, `large` for everything else), pays the x402 charge, uploads, and returns the same JSON response as Path 0: `direct_url`, `markdown` (ready-to-paste GH-flavored markdown), `content_type`, `size_bytes`, `sku`, `expires_at`.
 
-### Path B — `begin_upload` + S3 PUT + `complete_upload` (presigned S3)
+The bridge enforces two safeguards before any byte transfer:
 
-**Use this for anything Path A can't swallow whole.** Critically: **never degrade the image to fit Path A** — don't compress, downscale, or convert to lossy JPEG just to squeeze under the Read limit. The bytes never pass through your context on Path B, so the Read limit doesn't apply.
+- **Path confinement.** The path is `realpath`-resolved (symlinks followed) and must end up under `$HOME` or `/tmp`. Anywhere else is refused. If the user asks to upload `/etc/foo.png` or similar, do **not** copy the file under `~/` to work around the check — tell the user the bridge intentionally refuses paths outside `$HOME`/`/tmp` and ask whether they want to proceed by moving the file themselves.
+- **MIME magic-byte sniff.** The file's first bytes must match a known image format (PNG, JPEG, GIF, BMP, WebP, AVIF, HEIC). The on-disk extension is ignored; a text file renamed `*.png` is refused. If the upload fails with a MIME error, the file isn't the type its name claims — investigate before working around it.
 
-1. `stat -f%z <path>` (macOS) or `stat -c%s <path>` (Linux) to get the exact byte size.
-2. Call `begin_upload` with `filename`, `mime`, `size_bytes`. It returns `s3_url`, `upload_id`, and `put_example` (a curl one-liner). Note: this SKU (`large`) is more expensive than `upload_image` ($0.25 vs $0.05) — the plugin's default `CLOUDUP_MAX_USD` of `$0.30` covers it, but if you've lowered the cap the call will fail with `mpp-remote: charge … exceeds MPP_MAX_AMOUNT_USD=…`.
-3. PUT the raw file bytes to `s3_url` from the shell — `curl -X PUT --data-binary @<path> -H "Content-Type: <mime>" "<s3_url>"`. The bytes go straight from disk to S3, never through your context.
-4. Call `complete_upload` with the `upload_id` returned in step 2. It returns the same response shape as Path A (`direct_url`, `markdown`, etc.).
-
-If the PUT fails or you stall past the presign TTL, call `begin_upload` again — don't try to reuse the expired URL.
+Both errors come back as `isError: true` tool results with a clear message. Surface the message to the user; do not auto-retry.
 
 ### Both paths
 
-- Paste the `markdown` field verbatim into your response. To customize alt text on Path A, pass an `alt` argument (stripped of `[`/`]`, capped at 200 chars); otherwise it's derived from the filename stem. Path B doesn't accept an `alt` argument — edit the returned markdown if you need different alt text.
+- Paste the `markdown` field verbatim into your response. To customize alt text on Path 0, pass an `alt` argument (stripped of `[`/`]`, capped at 200 chars); otherwise it's derived from the filename stem. Path 1 doesn't accept an `alt` argument — edit the returned markdown if you need different alt text.
 - Tell the user the image was uploaded via x402 micropayment. They are paying for it from their configured wallet — this is expected and they should know. Mention the `expires_at`: the `embed` SKU (used by `upload_image`) retains files for 2 years (730 days), so PR-comment embeds stay valid long term; the `quick` and `large` SKUs retain for 30 days. After expiry the embed turns into a broken-image icon with no in-band explanation.
 
 ## Costs and failures
 
-Each upload is paid for by the user's wallet, provisioned via `/cloudup-setup` (Privy agent wallet, locally generated key, or bring-your-own key) or `CLOUDUP_WALLET_KEY` for CI / headless contexts. The default cap is $0.30 per call (`CLOUDUP_MAX_USD`) — covers all three SKUs: `embed` (`upload_image`, $0.05), `quick` (`quick_upload`, $0.01), and `large` (`begin_upload`, $0.25).
+Each upload is paid for by the user's wallet, provisioned via `/cloudup-setup` (Privy agent wallet, locally generated key, or bring-your-own key) or `CLOUDUP_WALLET_KEY` for CI / headless contexts. The default cap is $0.30 per call (`CLOUDUP_MAX_USD`) — covers all three SKUs: `embed` (`upload_image`, $0.05), `quick` ($0.01), and `large` ($0.25).
+
+The Path 1 `upload` tool routes by file size: under ~50 KB → `quick` ($0.01), otherwise `large` ($0.25). The agent doesn't pick the SKU; the bridge does. The `sku` field in the response tells you which one was used.
 
 If the upload fails:
-- **Cloudup MCP server not connected / tool not available at all** → almost always means no wallet key is provisioned yet. Tell the user to run `/cloudup-setup` (or set `CLOUDUP_WALLET_KEY` for the older path) and restart Claude Code.
+- **`upload` tool not available** → the plugin's `--hook` flag isn't wired or the user has an old `mpp-remote` cached. Tell the user to upgrade and restart Claude Code. Fall back to Path 0 if the image is already in conversation.
+- **`refusing to upload … not under $HOME or /tmp`** → the path is outside the allowed roots. Do not try to copy the file under `~/`; ask the user.
+- **`refusing to upload … not recognized by magic-byte sniff` / `not in the allowlist`** → the file isn't the format its extension claims, or is a type Cloudup doesn't accept. Investigate.
+- **Cloudup MCP server not connected / no upload tools at all** → almost always means no wallet key is provisioned yet. Tell the user to run `/cloudup-setup` (or set `CLOUDUP_WALLET_KEY` for the older path) and restart Claude Code.
 - **Missing key error returned from the tool** → tell the user to run `/cloudup-setup`.
 - **Cap exceeded** → tell the user; do not retry. They can raise `CLOUDUP_MAX_USD` if appropriate.
 - **Insufficient balance** → on the default staging endpoint the server auto-funds low-balance Automattic staff wallets with testnet USDC on each upload, so this is usually a transient RPC-propagation race between the funding tx and the facilitator's verify. A single retry is OK. If the error includes "Staff treasury depleted, ping #cloudup-eng", surface that message verbatim and stop — funding is an operational task for the cloudup-eng team, not the user. On non-staging endpoints (custom `CLOUDUP_MCP_URL`), tell the user to fund their wallet themselves.

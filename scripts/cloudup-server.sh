@@ -146,6 +146,18 @@ if [ -n "${CLOUDUP_PROXY:-}" ]; then
     PROXY_ARGS=(--proxy "$CLOUDUP_PROXY")
 fi
 
+# Resolve the plugin root from $0 so the hook path works regardless of how
+# Claude Code launches us. CLAUDE_PLUGIN_ROOT is substituted into .mcp.json
+# at MCP server start but isn't necessarily exported into the bash env.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+HOOK_PATH="$PLUGIN_ROOT/hooks/cloudup.mjs"
+
+# The hook adds the single-call `upload(path)` tool that wraps Cloudup's
+# begin_upload → S3 PUT → complete_upload ceremony (or quick_upload for
+# small files), with MIME magic-byte sniff + $HOME/-/tmp path confinement.
+# See hooks/cloudup.mjs for the contract.
 exec "$NPX" -y github:tellyworth/mpp-remote \
     ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} \
+    --hook "$HOOK_PATH" \
     "${CLOUDUP_MCP_URL:-https://api.stage-cloudup.com/mcp/public}"
