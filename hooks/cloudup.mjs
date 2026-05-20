@@ -246,7 +246,7 @@ function describeToolError(result) {
 	return JSON.stringify(result);
 }
 
-async function quickUpload({ client, safePath, mime, size, filename, streamId, streamTitle, logger }) {
+async function quickUpload({ callTool, safePath, mime, size, filename, streamId, streamTitle, logger }) {
 	logger(`quick_upload: ${filename} (${size} bytes, ${mime})`);
 	const bytes = await fs.readFile(safePath);
 	const args = {
@@ -257,7 +257,7 @@ async function quickUpload({ client, safePath, mime, size, filename, streamId, s
 	if (streamId) args.stream_id = streamId;
 	if (streamTitle) args.stream_title = streamTitle;
 
-	const resp = await client.callTool('quick_upload', args);
+	const resp = await callTool('quick_upload', args);
 	if (resp.error) throw new Error(`quick_upload JSON-RPC: ${JSON.stringify(resp.error)}`);
 	if (!resp.result || resp.result.isError) {
 		throw new Error(`quick_upload: ${describeToolError(resp.result)}`);
@@ -269,13 +269,13 @@ async function quickUpload({ client, safePath, mime, size, filename, streamId, s
 	return payload;
 }
 
-async function largeUpload({ client, safePath, mime, size, filename, streamId, streamTitle, logger }) {
+async function largeUpload({ callTool, safePath, mime, size, filename, streamId, streamTitle, logger }) {
 	logger(`begin_upload: ${filename} (${size} bytes, ${mime})`);
 	const beginArgs = { filename, size_bytes: size, mime };
 	if (streamId) beginArgs.stream_id = streamId;
 	if (streamTitle) beginArgs.stream_title = streamTitle;
 
-	const beginResp = await client.callTool('begin_upload', beginArgs);
+	const beginResp = await callTool('begin_upload', beginArgs);
 	if (beginResp.error) throw new Error(`begin_upload JSON-RPC: ${JSON.stringify(beginResp.error)}`);
 	if (!beginResp.result || beginResp.result.isError) {
 		throw new Error(`begin_upload: ${describeToolError(beginResp.result)}`);
@@ -305,7 +305,7 @@ async function largeUpload({ client, safePath, mime, size, filename, streamId, s
 	}
 	logger(`PUT ok (HTTP ${r.status})`);
 
-	const completeResp = await client.callTool('complete_upload', { upload_id: beginPayload.upload_id });
+	const completeResp = await callTool('complete_upload', { upload_id: beginPayload.upload_id });
 	if (completeResp.error) {
 		throw new Error(`complete_upload JSON-RPC: ${JSON.stringify(completeResp.error)}`);
 	}
@@ -321,12 +321,12 @@ async function largeUpload({ client, safePath, mime, size, filename, streamId, s
 	return completePayload;
 }
 
-async function uploadFile({ client, filePath, streamId, streamTitle, allowedMime, logger }) {
+async function uploadFile({ callTool, filePath, streamId, streamTitle, allowedMime, logger }) {
 	const { path: safePath, mime, size } = await validateUploadPath(filePath, { allowedMime });
 	const filename = path.basename(safePath);
 
 	const route = size <= QUICK_INLINE_THRESHOLD_BYTES ? quickUpload : largeUpload;
-	return route({ client, safePath, mime, size, filename, streamId, streamTitle, logger });
+	return route({ callTool, safePath, mime, size, filename, streamId, streamTitle, logger });
 }
 
 // ---- Hook export -------------------------------------------------------
@@ -366,12 +366,12 @@ export default {
 			},
 		},
 	],
-	async handle({ name, args, client, logger }) {
+	async handle({ name, args, callTool, logger }) {
 		if (name !== 'upload') return null;
 		const log = logger ?? (() => {});
 		try {
 			const payload = await uploadFile({
-				client,
+				callTool,
 				filePath: args.path,
 				streamId: typeof args.stream_id === 'string' ? args.stream_id : undefined,
 				streamTitle: typeof args.stream_title === 'string' ? args.stream_title : undefined,
