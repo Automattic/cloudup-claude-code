@@ -5,10 +5,13 @@ Upload images to Cloudup directly from Claude Code, paying per upload with x402 
 ## What's in the plugin
 
 - **MCP server** (`cloudup`) — wraps `tellyworth/mpp-remote` pointed at Cloudup staging
+- **Hook** (`hooks/cloudup.mjs`) — adds a single-call `upload(path)` tool via mpp-remote's hook API. Wraps the three-step `begin_upload` → S3 PUT → `complete_upload` ceremony, picks the SKU automatically (prefers the `embed` SKU's 2-year retention for images, falls through to `quick` or `large` by size or when `stream_id` is set), and enforces MIME magic-byte sniffing plus `$HOME` / `$TMPDIR` / `/tmp` path confinement before any byte transfer
 - **Skill** (`uploading-to-cloudup`) — teaches the agent when to reach for the upload tool
 - **Slash commands** — `/cloudup <path>` for uploads, `/cloudup-setup` for one-time key provisioning
 
 ## Setup
+
+Requires Node.js ≥ 18 (the `upload` hook uses global `fetch` and streaming PUT, both Node 18+). On Node 16 the hook crashes with `ReferenceError: fetch is not defined` mid-upload.
 
 ### 1. Install the plugin
 
@@ -80,7 +83,7 @@ The wrapper skips Privy and Keychain entirely and signs locally with viem. Keep 
 
 ### 3. Fund the wallet with USDC
 
-Send testnet USDC to your wallet address on **Base Sepolia** (chain ID 84532). A small amount is plenty — uploads cost $0.01–$0.25 depending on which tool the agent uses (image embeds are $0.05, small file uploads $0.01, and large multipart uploads up to $0.25). The Cloudup server submits the meta-transaction on your behalf, so you don't need ETH for gas.
+Send testnet USDC to your wallet address on **Base Sepolia** (chain ID 84532). A small amount is plenty — uploads cost $0.01–$0.25 depending on the SKU the bridge picks: image embeds are $0.05 (the default for on-disk images, chosen for 2-year retention so PR-comment screenshots don't rot), small non-image files are $0.01, and large files run up to $0.25. The Cloudup server submits the meta-transaction on your behalf, so you don't need ETH for gas.
 
 For Path A, `paw fund` opens Privy's funding flow in a browser. For Paths B and C, use a Base Sepolia faucet:
 
@@ -95,6 +98,7 @@ For Path A, `paw fund` opens Privy's funding flow in a browser. For Paths B and 
 | `CLOUDUP_MCP_URL` | `https://api.stage-cloudup.com/mcp/public` | Server endpoint (swap for prod when available) |
 | `CLOUDUP_WALLET_KEY` | _(unset)_ | Path C selector. If set to a `0x…` private key, skip both `paw` and Keychain and sign locally with viem. Use for CI / headless agents only. |
 | `CLOUDUP_PROXY` | _(unset)_ | Outbound proxy passed to mpp-remote as `--proxy <value>`. Leave unset for external users. A8c users on the staging endpoint set this to `socks5h://127.0.0.1:8080` (the conventional `ssh -D 8080 <bastion>` forwarder). See "Reaching the staging endpoint" below. |
+| `CLOUDUP_ALLOWED_MIME` | `image/*` | Comma-separated MIME allowlist enforced by the `upload` tool's magic-byte sniff. Default accepts any image (PNG, JPEG, GIF, BMP, WebP, AVIF, HEIC). Narrow to tighten (e.g. `image/png` for screenshot-only flows). Widen with care — `*/*` disables the safeguard, the point of which is to refuse a text file renamed `id_rsa.png`. Common widening is `image/*,video/mp4,video/webm` for clip uploads. |
 
 ### 5. Remove any duplicate manual cloudup MCP
 
@@ -128,6 +132,8 @@ You only need USDC — no ETH for gas. The server submits the meta-transaction o
 - **"connection timed out after 30000ms"** — The MCP server is reachable but the upstream Cloudup endpoint isn't. Your A8c SSH tunnel (`ssh -D 8080 …`) isn't up on `localhost:8080`. Bring it back up — see the staging-endpoint section below.
 - **"Spending cap exceeded"** — A single upload would exceed `CLOUDUP_MAX_USD`. Raise it (with care) or use a smaller file.
 - **"Insufficient balance"** — Fund the wallet address with more testnet USDC on Base Sepolia (`paw fund` or a faucet).
+- **`refusing to upload … not under $HOME, $TMPDIR, or /tmp`** — The bridge resolves the path with `realpath` (so symlinks are followed) and only allows uploads from your home directory, the OS temp directory (`$TMPDIR` — `/var/folders/...` on macOS, often `/tmp` on Linux), or `/tmp` itself. Intentional defense against an agent being induced to upload from elsewhere on the filesystem (`~/.ssh/id_rsa`, `/etc/...`, etc.). Move the file under one of those roots and retry, or upload via Path 0 (paste the image into chat) if it's already on screen.
+- **`refusing to upload … not recognized by magic-byte sniff`** — The file's first bytes don't match an allowed image format (PNG / JPEG / GIF / BMP / WebP / AVIF / HEIC). The on-disk extension is ignored — a text file renamed `screenshot.png` is rejected. If you genuinely want to upload a non-image (e.g. an MP4 clip), set `CLOUDUP_ALLOWED_MIME=image/*,video/mp4` and restart Claude Code.
 
 ## Reaching the staging endpoint (A8c-only for now)
 
