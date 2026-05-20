@@ -5,6 +5,7 @@ Upload images to Cloudup directly from Claude Code, paying per upload with x402 
 ## What's in the plugin
 
 - **MCP server** (`cloudup`) — wraps `tellyworth/mpp-remote` pointed at Cloudup staging
+- **Hook** (`hooks/cloudup.mjs`) — adds a single-call `upload(path)` tool via mpp-remote's hook API. Wraps the three-step `begin_upload` → S3 PUT → `complete_upload` ceremony, picks the cheapest applicable SKU, and enforces MIME magic-byte sniffing plus `$HOME`/`/tmp` path confinement before any byte transfer
 - **Skill** (`uploading-to-cloudup`) — teaches the agent when to reach for the upload tool
 - **Slash commands** — `/cloudup <path>` for uploads, `/cloudup-setup` for one-time key provisioning
 
@@ -82,7 +83,7 @@ The wrapper skips Privy and Keychain entirely and signs locally with viem. Keep 
 
 ### 3. Fund the wallet with USDC
 
-Send testnet USDC to your wallet address on **Base Sepolia** (chain ID 84532). A small amount is plenty — uploads cost $0.01–$0.25 depending on which tool the agent uses (image embeds are $0.05, small file uploads $0.01, and large multipart uploads up to $0.25). The Cloudup server submits the meta-transaction on your behalf, so you don't need ETH for gas.
+Send testnet USDC to your wallet address on **Base Sepolia** (chain ID 84532). A small amount is plenty — uploads cost $0.01–$0.25 depending on the SKU the bridge picks: image embeds are $0.05 (the default for on-disk images, chosen for 2-year retention so PR-comment screenshots don't rot), small non-image files are $0.01, and large files run up to $0.25. The Cloudup server submits the meta-transaction on your behalf, so you don't need ETH for gas.
 
 For Path A, `paw fund` opens Privy's funding flow in a browser. For Paths B and C, use a Base Sepolia faucet:
 
@@ -131,6 +132,8 @@ You only need USDC — no ETH for gas. The server submits the meta-transaction o
 - **"connection timed out after 30000ms"** — The MCP server is reachable but the upstream Cloudup endpoint isn't. Your A8c SSH tunnel (`ssh -D 8080 …`) isn't up on `localhost:8080`. Bring it back up — see the staging-endpoint section below.
 - **"Spending cap exceeded"** — A single upload would exceed `CLOUDUP_MAX_USD`. Raise it (with care) or use a smaller file.
 - **"Insufficient balance"** — Fund the wallet address with more testnet USDC on Base Sepolia (`paw fund` or a faucet).
+- **`refusing to upload … not under $HOME or /tmp`** — The bridge resolves the path with `realpath` (so symlinks are followed) and only allows uploads from your home directory or the system temp directory. Intentional defense against an agent being induced to upload from elsewhere on the filesystem (`~/.ssh/id_rsa`, `/etc/...`, etc.). Move the file under `~/` or `/tmp` and retry, or upload via Path 0 (paste the image into chat) if it's already on screen.
+- **`refusing to upload … not recognized by magic-byte sniff`** — The file's first bytes don't match an allowed image format (PNG / JPEG / GIF / BMP / WebP / AVIF / HEIC). The on-disk extension is ignored — a text file renamed `screenshot.png` is rejected. If you genuinely want to upload a non-image (e.g. an MP4 clip), set `CLOUDUP_ALLOWED_MIME=image/*,video/mp4` and restart Claude Code.
 
 ## Reaching the staging endpoint (A8c-only for now)
 
