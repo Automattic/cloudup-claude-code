@@ -4,11 +4,17 @@
  * Dispatch picks one of three upstream tools based on mime + size + whether
  * stream_id is set. These tests lock that decision table in:
  *
- *   image,    ≤9 MiB,  no streamId   → upload_image (embed)
- *   image,    ≤9 MiB,  with streamId → quick_upload (embed unavailable with stream_id)
- *   non-image ≤1.5 MiB                → quick_upload (quick)
- *   image,    >9 MiB                  → begin_upload (large)
- *   non-image >1.5 MiB                → begin_upload (large)
+ *   image,    ≤600 KiB, no streamId   → upload_image (embed)
+ *   image,    ≤600 KiB, with streamId → quick_upload (embed unavailable with stream_id)
+ *   non-image ≤600 KiB                → quick_upload (quick)
+ *   image,    >600 KiB                → begin_upload (large)
+ *   non-image >600 KiB                → begin_upload (large)
+ *
+ * The 600 KiB cutoff is set by the upload endpoint's nginx body limit, not
+ * Cloudup itself — base64 expansion of bytes above ~768 KiB raw overruns the
+ * ~1 MB nginx default and gets a 413+text/html response that surfaces here
+ * as "upload_image: no result". Anything above the cutoff takes the S3-PUT
+ * path which bypasses nginx entirely.
  *
  * Strategy: drive the hook's `handle()` with a fake callTool that records
  * which upstream tool was hit and returns either a parseable payload or an
@@ -110,7 +116,7 @@ async function runDispatch(filename, contents, { callArgs = {}, failOn = null } 
 
 // ---- the five cases ----------------------------------------------------
 
-test('dispatch: image ≤9 MiB, no streamId → upload_image (embed)', async () => {
+test('dispatch: image ≤600 KiB, no streamId → upload_image (embed)', async () => {
 	const { tool, result } = await runDispatch('small.png', buildFixture(PNG_HEADER, 32));
 	assert.equal(tool.calls.length, 1);
 	assert.equal(tool.calls[0].name, 'upload_image');
@@ -123,7 +129,7 @@ test('dispatch: image ≤9 MiB, no streamId → upload_image (embed)', async () 
 	assert.equal(result.isError, undefined);
 });
 
-test('dispatch: image ≤9 MiB, with streamId → quick_upload (embed skipped)', async () => {
+test('dispatch: image ≤600 KiB, with streamId → quick_upload (embed skipped)', async () => {
 	const { tool, result } = await runDispatch(
 		'small-with-stream.png',
 		buildFixture(PNG_HEADER, 32),
@@ -135,15 +141,15 @@ test('dispatch: image ≤9 MiB, with streamId → quick_upload (embed skipped)',
 	assert.equal(result.isError, undefined);
 });
 
-test('dispatch: non-image ≤1.5 MiB → quick_upload', async () => {
+test('dispatch: non-image ≤600 KiB → quick_upload', async () => {
 	const { tool, result } = await runDispatch('clip-small.mp4', buildFixture(MP4_HEADER, 64));
 	assert.equal(tool.calls[0].name, 'quick_upload');
 	assert.equal(tool.calls[0].args.mime, 'video/mp4');
 	assert.equal(result.isError, undefined);
 });
 
-test('dispatch: image >9 MiB → begin_upload (large)', async () => {
-	const size = 9 * 1024 * 1024 + 1;
+test('dispatch: image >600 KiB → begin_upload (large)', async () => {
+	const size = 600 * 1024 + 1;
 	const { tool, result } = await runDispatch('large.png', buildFixture(PNG_HEADER, size), {
 		failOn: 'begin_upload',
 	});
@@ -154,8 +160,8 @@ test('dispatch: image >9 MiB → begin_upload (large)', async () => {
 	assert.equal(result.isError, true);
 });
 
-test('dispatch: non-image >1.5 MiB → begin_upload (large)', async () => {
-	const size = 1536 * 1024 + 1;
+test('dispatch: non-image >600 KiB → begin_upload (large)', async () => {
+	const size = 600 * 1024 + 1;
 	const { tool, result } = await runDispatch(
 		'clip-large.mp4',
 		buildFixture(MP4_HEADER, size),
@@ -226,7 +232,7 @@ test('complete_upload retry: surfaces upload_id in handle() structuredContent', 
 	// hook surfaces upload_id in structuredContent so a smarter caller could
 	// recover without re-paying for begin_upload.
 	const p = path.join(tmpRoot, 'stuck.png');
-	await fs.writeFile(p, buildFixture(PNG_HEADER, 9 * 1024 * 1024 + 1));
+	await fs.writeFile(p, buildFixture(PNG_HEADER, 600 * 1024 + 1));
 
 	const calls = [];
 	const callTool = async (name, args) => {
