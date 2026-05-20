@@ -155,7 +155,7 @@ HOOK_PATH="$PLUGIN_ROOT/hooks/cloudup.mjs"
 
 # The hook adds the single-call `upload(path)` tool that wraps Cloudup's
 # begin_upload → S3 PUT → complete_upload ceremony (or quick_upload for
-# small files), with MIME magic-byte sniff + $HOME or /tmp path confinement.
+# small files), with MIME magic-byte sniff + $HOME / $TMPDIR / /tmp path confinement.
 # See hooks/cloudup.mjs for the contract.
 exec "$NPX" -y github:tellyworth/mpp-remote \
     ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} \

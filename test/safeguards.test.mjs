@@ -3,7 +3,7 @@
  *
  *   - detectMime: magic-byte recognition per format
  *   - parseAllowedMime / mimeAllowed: allowlist parsing and matching
- *   - resolveSafePath: $HOME/tmp confinement, realpath, symlink escape
+ *   - resolveSafePath: $HOME / $TMPDIR / /tmp confinement, realpath, symlink escape
  *   - validateUploadPath: end-to-end (path + size + sniff + allowlist)
  *
  * The classic attack the path + MIME safeguards must block is an agent being
@@ -253,7 +253,7 @@ test('resolveSafePath: /etc/hosts refused as outside both roots', async () => {
 	// hardcoded /tmp fallback. The rejection message must mention the roots.
 	await assert.rejects(
 		resolveSafePath('/etc/hosts', { home: homeRoot, tmp: tmpRoot }),
-		/not under \$HOME or \/tmp/,
+		/not under \$HOME, \$TMPDIR, or \/tmp/,
 	);
 });
 
@@ -265,7 +265,7 @@ test('resolveSafePath: symlink escape to /etc/hosts refused after realpath', asy
 	try {
 		await assert.rejects(
 			resolveSafePath(linkPath, { home: homeRoot, tmp: tmpRoot }),
-			/not under \$HOME or \/tmp/,
+			/not under \$HOME, \$TMPDIR, or \/tmp/,
 		);
 	} finally {
 		await fs.unlink(linkPath);
@@ -287,7 +287,7 @@ test('resolveSafePath: prefix-collision near-miss — sibling not treated as und
 	const p = await writeFixture(safeguardDir, 'pic.png', PNG);
 	await assert.rejects(
 		resolveSafePath(p, { home: safeDir, tmp: '/dev/null/unused' }),
-		/not under \$HOME or \/tmp/,
+		/not under \$HOME, \$TMPDIR, or \/tmp/,
 	);
 	// Sanity check: same file IS accepted when home points to safeguardDir.
 	const ok = await resolveSafePath(p, { home: safeguardDir, tmp: '/dev/null/unused' });
@@ -371,7 +371,7 @@ test('validateUploadPath: symlink-escape file refused before any open', async ()
 	try {
 		await assert.rejects(
 			validateUploadPath(linkPath, { home: homeRoot, tmp: tmpRoot, allowedMime: 'image/*' }),
-			/not under \$HOME or \/tmp/,
+			/not under \$HOME, \$TMPDIR, or \/tmp/,
 		);
 	} finally {
 		await fs.unlink(linkPath);

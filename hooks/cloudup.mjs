@@ -8,14 +8,19 @@
  * What the hook does on each `upload` call:
  *
  *   1. Safeguards. Sniff the file's magic bytes against an allowlist (default
- *      `image/*`) and require the path to resolve under $HOME or /tmp. Both
+ *      `image/*`) and require the path to resolve under $HOME, $TMPDIR, or
+ *      /tmp. Both
  *      checks run before any upstream call or byte transfer. The on-disk
  *      extension is ignored — a text file renamed `id_rsa.png` is refused.
  *
- *   2. Route by size. Files under QUICK_INLINE_THRESHOLD bytes go through
- *      `quick_upload` (inline base64; $0.01 SKU). Larger files go through
- *      `begin_upload` → S3 PUT → `complete_upload` ($0.25 SKU). The agent
- *      doesn't pick; the hook chooses the cheapest path that works.
+ *   2. Pick a SKU. The hook routes by mime, size, and whether stream_id is
+ *      set — preferring retention over raw cost for the common PR-comment
+ *      screenshot case:
+ *         image, no stream_id, ≤9 MiB → upload_image  (embed, 2-year,  $0.05)
+ *         ≤1.5 MiB                    → quick_upload  (quick, 30-day,  $0.01)
+ *         otherwise                   → begin_upload  (large, 30-day,  $0.25)
+ *      See the EMBED_MAX_BYTES / QUICK_MAX_BYTES constants below and the
+ *      uploadFile() dispatch for the authoritative table.
  *
  *   3. Return Cloudup's response (share_url, direct_url, markdown,
  *      content_type, size_bytes, sku, expires_at) as a CallToolResult.
@@ -131,8 +136,12 @@ function mimeAllowed(mime, patterns) {
 // ---- Safeguards: path confinement --------------------------------------
 
 // Resolve `inputPath` via realpath (follows symlinks) and require the result
-// to live under $HOME or /tmp. Both roots are themselves realpath'd, so
-// macOS's `/tmp → /private/tmp` symlink is matched correctly.
+// to live under $HOME, $TMPDIR (os.tmpdir()), or /tmp. All three roots are
+// themselves realpath'd, so macOS's `/tmp → /private/tmp` symlink and the
+// `/var/folders/.../T` style $TMPDIR are matched correctly. The system
+// temp dir is included so files written by ordinary OS APIs (Cocoa
+// temporary directories on macOS, etc.) work without the caller having
+// to copy them under ~/ first.
 export async function resolveSafePath(inputPath, { home, tmp } = {}) {
 	if (typeof inputPath !== 'string' || inputPath === '') {
 		throw new Error('upload path is required');
@@ -171,7 +180,7 @@ export async function resolveSafePath(inputPath, { home, tmp } = {}) {
 	if (!uniqueRoots.some((r) => isUnder(resolved, r))) {
 		throw new Error(
 			`refusing to upload "${inputPath}" — resolves to "${resolved}", ` +
-				`which is not under $HOME or /tmp. ` +
+				`which is not under $HOME, $TMPDIR, or /tmp. ` +
 				`(roots checked: ${uniqueRoots.join(', ') || 'none'})`,
 		);
 	}
@@ -421,7 +430,7 @@ export default {
 				'upload_image (embed SKU, 2-year retention — good for PR comments), ' +
 				'other small files via quick_upload (30-day, $0.01), anything larger ' +
 				'via begin_upload + S3 PUT + complete_upload (30-day, $0.25). The path ' +
-				'is realpath-resolved and must live under $HOME or /tmp; the file type ' +
+				'is realpath-resolved and must live under $HOME, $TMPDIR, or /tmp; the file type ' +
 				'is sniffed from magic bytes (default allowlist: image/*; override ' +
 				'with CLOUDUP_ALLOWED_MIME). Files that fail either check are refused.',
 			inputSchema: {
@@ -431,7 +440,7 @@ export default {
 						type: 'string',
 						description:
 							'Absolute path to the file. May begin with ~/. After symlink ' +
-							'resolution must be under $HOME or /tmp.',
+							'resolution must be under $HOME, $TMPDIR, or /tmp.',
 					},
 					stream_id: {
 						type: 'string',

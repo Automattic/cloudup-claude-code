@@ -1,9 +1,8 @@
 /*
  * Tests for the SKU-dispatch logic in hooks/cloudup.mjs's uploadFile().
  *
- * 2f39b89 rewrote the previous "two-route by size" dispatch into a three-way
- * decision based on mime + size + stream_id presence. These tests lock that
- * decision table in:
+ * Dispatch picks one of three upstream tools based on mime + size + whether
+ * stream_id is set. These tests lock that decision table in:
  *
  *   image,    ≤9 MiB,  no streamId   → upload_image (embed)
  *   image,    ≤9 MiB,  with streamId → quick_upload (embed unavailable with stream_id)

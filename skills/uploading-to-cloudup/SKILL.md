@@ -82,7 +82,7 @@ Use for any image already saved on disk. One tool call handles the whole upload 
 
 The bridge enforces two safeguards before any byte transfer:
 
-- **Path confinement.** The path is `realpath`-resolved (symlinks followed) and must end up under `$HOME` or `/tmp`. Anywhere else is refused. If the user asks to upload `/etc/foo.png` or similar, do **not** copy the file under `~/` to work around the check — tell the user the bridge intentionally refuses paths outside `$HOME`/`/tmp` and ask whether they want to proceed by moving the file themselves.
+- **Path confinement.** The path is `realpath`-resolved (symlinks followed) and must end up under `$HOME`, `$TMPDIR` (the OS temp dir — `/var/folders/...` on macOS, often `/tmp` on Linux), or `/tmp`. Anywhere else is refused. If the user asks to upload `/etc/foo.png` or similar, do **not** copy the file under `~/` to work around the check — tell the user the bridge intentionally refuses paths outside those roots and ask whether they want to proceed by moving the file themselves.
 - **MIME magic-byte sniff.** The file's first bytes must match a known image format (PNG, JPEG, GIF, BMP, WebP, AVIF, HEIC). The on-disk extension is ignored; a text file renamed `*.png` is refused. If the upload fails with a MIME error, the file isn't the type its name claims — investigate before working around it.
 
 Both errors come back as `isError: true` tool results with a clear message. Surface the message to the user; do not auto-retry.
@@ -100,7 +100,7 @@ The Path 1 `upload` tool routes by sniffed MIME and size — images go to `embed
 
 If the upload fails:
 - **`upload` tool not available** → the plugin's `--hook` flag isn't wired or the user has an old `mpp-remote` cached. Tell the user to upgrade and restart Claude Code. Fall back to Path 0 if the image is already in conversation.
-- **`refusing to upload … not under $HOME or /tmp`** → the path is outside the allowed roots. Do not try to copy the file under `~/`; ask the user.
+- **`refusing to upload … not under $HOME, $TMPDIR, or /tmp`** → the path is outside the allowed roots. Do not try to copy the file under `~/`; ask the user.
 - **`refusing to upload … not recognized by magic-byte sniff` / `not in the allowlist`** → the file isn't the format its extension claims, or is a type Cloudup doesn't accept. Investigate.
 - **`complete_upload failed after N attempts (S3 PUT succeeded) … upload_id: …`** → the bytes are already in S3 and you've already paid for the `large` SKU; only the final commit step failed (the hook already retried). Do **not** auto-retry `upload(path)` — that would re-run `begin_upload` and double-pay while the previous bytes sit stranded. Surface the `upload_id` (it's in both the error text and `structuredContent.upload_id`) and tell the user; recovery is to retry `complete_upload` with that ID, which today usually means asking #cloudup-eng to finalize manually.
 - **Cloudup MCP server not connected / no upload tools at all** → almost always means no wallet key is provisioned yet. Tell the user to run `/cloudup-setup` (or set `CLOUDUP_WALLET_KEY` for the older path) and restart Claude Code.
