@@ -73,7 +73,10 @@ Use for any image already saved on disk. One tool call handles the whole upload 
 
 1. Identify the absolute path to the local image file (e.g. `/tmp/screenshot.png` or `~/Pictures/foo.heic`).
 2. Call `mcp__plugin_cloudup_cloudup__upload` with `path: "<absolute path>"`. Optional: `stream_id` to append to an existing Cloudup stream, or `stream_title` to name a new one.
-3. The bridge reads the file, picks the cheapest applicable SKU automatically (`quick` for files under ~50 KB, `large` for everything else), pays the x402 charge, uploads, and returns the same JSON response as Path 0: `direct_url`, `markdown` (ready-to-paste GH-flavored markdown), `content_type`, `size_bytes`, `sku`, `expires_at`.
+3. The bridge reads the file, picks the SKU automatically, pays the x402 charge, uploads, and returns the same JSON response as Path 0: `direct_url`, `markdown` (ready-to-paste GH-flavored markdown), `content_type`, `size_bytes`, `sku`, `expires_at`. SKU routing prefers retention over raw cost for the common case (PR-comment screenshots):
+   - **Image up to ~9 MB and no `stream_id`** → `embed` SKU ($0.05, **2-year retention**). The default for screenshots.
+   - **Anything else up to ~1.5 MB** → `quick` SKU ($0.01, 30-day retention). Used for non-image small files, and for any small file when `stream_id` is set (the embed-route's underlying tool doesn't accept `stream_id`).
+   - **Larger files** → `large` SKU ($0.25, 30-day retention) via the three-step ceremony, handled inside the bridge.
 
 The bridge enforces two safeguards before any byte transfer:
 
@@ -91,7 +94,7 @@ Both errors come back as `isError: true` tool results with a clear message. Surf
 
 Each upload is paid for by the user's wallet, provisioned via `/cloudup-setup` (Privy agent wallet, locally generated key, or bring-your-own key) or `CLOUDUP_WALLET_KEY` for CI / headless contexts. The default cap is $0.30 per call (`CLOUDUP_MAX_USD`) — covers all three SKUs: `embed` (`upload_image`, $0.05), `quick` ($0.01), and `large` ($0.25).
 
-The Path 1 `upload` tool routes by file size: under ~50 KB → `quick` ($0.01), otherwise `large` ($0.25). The agent doesn't pick the SKU; the bridge does. The `sku` field in the response tells you which one was used.
+The Path 1 `upload` tool routes by sniffed MIME and size — images go to `embed` (2-year retention) by default, small non-images to `quick`, anything larger to `large`. The agent doesn't pick the SKU; the bridge does. The `sku` field in the response tells you which one was used.
 
 If the upload fails:
 - **`upload` tool not available** → the plugin's `--hook` flag isn't wired or the user has an old `mpp-remote` cached. Tell the user to upgrade and restart Claude Code. Fall back to Path 0 if the image is already in conversation.

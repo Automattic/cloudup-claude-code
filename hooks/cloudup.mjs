@@ -32,11 +32,21 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
-// Files this big or smaller go via quick_upload (inline base64). The Cloudup
-// server's quick-upload cap on the staging endpoint is well above this; the
-// conservative threshold keeps base64 payloads under ~70 KB so they don't
-// stress the JSON-RPC pipe.
-const QUICK_INLINE_THRESHOLD_BYTES = 50 * 1024;
+// Per-SKU max payload sizes. The Cloudup server enforces base64 length caps on
+// the inline upload tools; we stay a comfortable margin below them so a file
+// at the threshold doesn't bump into the ceiling after base64 expansion (4:3).
+//
+// upload_image (`embed` SKU, 2-year retention) caps content_base64 at ~13.98M
+// chars → ~10.5 MiB binary. 9 MiB leaves headroom.
+//
+// quick_upload (`quick` SKU, 30-day retention) caps content_base64 at ~2.8M
+// chars → ~2 MiB binary. 1.5 MiB leaves headroom.
+//
+// Anything larger than these (or any image when stream_id is set, since
+// upload_image doesn't accept stream_id) falls through to begin_upload +
+// S3 PUT + complete_upload (`large` SKU, 30-day retention).
+const EMBED_MAX_BYTES = 9 * 1024 * 1024;
+const QUICK_MAX_BYTES = 1536 * 1024; // 1.5 MiB
 
 // ---- Safeguards: MIME sniff --------------------------------------------
 
@@ -264,7 +274,27 @@ function unwrapToolResponse(toolName, resp) {
 	return payload;
 }
 
+async function embedUpload({ callTool, safePath, mime, size, filename, streamTitle, logger }) {
+	// upload_image → `embed` SKU. 2-year retention, $0.05. Best default for
+	// images that might end up in PR comments or other long-lived markdown.
+	// Doesn't accept stream_id (the underlying server tool's schema omits it),
+	// so the caller routes around this when stream_id is set.
+	logger(`upload_image (embed): ${filename} (${size} bytes, ${mime})`);
+	const bytes = await fs.readFile(safePath);
+	const args = {
+		filename,
+		content_base64: bytes.toString('base64'),
+		mime,
+	};
+	if (streamTitle) args.stream_title = streamTitle;
+
+	return unwrapToolResponse('upload_image', await callTool('upload_image', args));
+}
+
 async function quickUpload({ callTool, safePath, mime, size, filename, streamId, streamTitle, logger }) {
+	// quick_upload → `quick` SKU. 30-day retention, $0.01. Used for non-image
+	// small files, and for any small file when stream_id is set (since
+	// upload_image doesn't support stream_id).
 	logger(`quick_upload: ${filename} (${size} bytes, ${mime})`);
 	const bytes = await fs.readFile(safePath);
 	const args = {
@@ -326,9 +356,19 @@ async function largeUpload({ callTool, safePath, mime, size, filename, streamId,
 async function uploadFile({ callTool, filePath, streamId, streamTitle, allowedMime, logger }) {
 	const { path: safePath, mime, size } = await validateUploadPath(filePath, { allowedMime });
 	const filename = path.basename(safePath);
+	const ctx = { callTool, safePath, mime, size, filename, streamId, streamTitle, logger };
 
-	const route = size <= QUICK_INLINE_THRESHOLD_BYTES ? quickUpload : largeUpload;
-	return route({ callTool, safePath, mime, size, filename, streamId, streamTitle, logger });
+	// SKU routing prefers retention over raw cost for the common case
+	// (image headed for a PR-comment markdown embed):
+	//   image, no stream_id, ≤9 MiB  → upload_image (embed, 2-year, $0.05)
+	//   ≤1.5 MiB                     → quick_upload  (quick, 30-day, $0.01)
+	//   otherwise                    → begin_upload (large, 30-day, $0.25)
+	// upload_image doesn't take stream_id, so callers that pass one skip embed
+	// and land in quick or large instead.
+	const isImage = mime.startsWith('image/');
+	if (isImage && !streamId && size <= EMBED_MAX_BYTES) return embedUpload(ctx);
+	if (size <= QUICK_MAX_BYTES) return quickUpload(ctx);
+	return largeUpload(ctx);
 }
 
 // ---- Hook export -------------------------------------------------------
@@ -339,12 +379,14 @@ export default {
 		{
 			name: 'upload',
 			description:
-				'Upload a local file to Cloudup in a single call. The bridge runs ' +
-				'begin_upload → S3 PUT → complete_upload (or quick_upload for small ' +
-				'files) and returns the share URL. The path is realpath-resolved and ' +
-				'must live under $HOME or /tmp; the file type is sniffed from magic ' +
-				'bytes (default allowlist: image/*; override with CLOUDUP_ALLOWED_MIME). ' +
-				'Files that fail either check are refused.',
+				'Upload a local file to Cloudup in a single call and get a share URL. ' +
+				'The bridge picks the SKU automatically: images up to ~9 MB go via ' +
+				'upload_image (embed SKU, 2-year retention — good for PR comments), ' +
+				'other small files via quick_upload (30-day, $0.01), anything larger ' +
+				'via begin_upload + S3 PUT + complete_upload (30-day, $0.25). The path ' +
+				'is realpath-resolved and must live under $HOME or /tmp; the file type ' +
+				'is sniffed from magic bytes (default allowlist: image/*; override ' +
+				'with CLOUDUP_ALLOWED_MIME). Files that fail either check are refused.',
 			inputSchema: {
 				type: 'object',
 				properties: {
