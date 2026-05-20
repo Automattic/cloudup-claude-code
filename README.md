@@ -155,6 +155,13 @@ External developers can install the plugin but will not be able to reach the ser
 
 ## Version
 
+`0.6.0` — Single-call `upload` tool plus automatic A8c SOCKS proxy detection:
+
+- **`hooks/cloudup.mjs`** added as an mpp-remote hook (`scripts/cloudup-server.sh` now passes `--hook ${PLUGIN_ROOT}/hooks/cloudup.mjs`). Exposes a single `upload(path)` MCP tool that wraps the three-step `begin_upload` → S3 PUT → `complete_upload` ceremony into one agent-visible call. The bridge picks the SKU automatically by sniffed MIME + size: images up to ~9 MB go via `upload_image` (`embed` SKU, 2-year retention — chosen so PR-comment screenshots survive); non-image small files via `quick_upload` ($0.01, 30-day); larger via `begin_upload` ($0.25, 30-day).
+- **MIME magic-byte sniff + `$HOME`/`$TMPDIR`/`/tmp` path confinement** run before any byte transfer. The on-disk extension is ignored — a text file renamed `screenshot.png` is refused. Path is `realpath`-resolved so a symlink pointing outside the allowed roots gets caught. Override the MIME allowlist via `CLOUDUP_ALLOWED_MIME` (e.g. `image/*,video/mp4`).
+- **Auto-detect SOCKS proxy.** When `CLOUDUP_PROXY` is unset and the upstream URL is the A8c staging endpoint, the wrapper probes `127.0.0.1:8080`; if something is listening (the conventional `ssh -D 8080 <bastion>` forwarder), it routes through it. External users on the public endpoint are unaffected.
+- **`skills/uploading-to-cloudup/SKILL.md` rewritten** to collapse the old Path A + Path B into a single Path 1 backed by the new `upload` tool. Path 0 (in-conversation images via `upload_image`) unchanged. Sensitive-content gate preserved verbatim.
+
 `0.5.0` — Adds Path D (Bring your own key) for importing an existing private key into the macOS Keychain via a secure-paste flow:
 
 - **`cloudup-key.sh set` with no argument** now delegates to the macOS Keychain helper's interactive `-w` prompt — the key never enters argv, shell history, or the Claude transcript. Refuses to run without a TTY, so accidental invocation from Claude's bash tool fails safely.
