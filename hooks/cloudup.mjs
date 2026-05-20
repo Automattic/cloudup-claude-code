@@ -246,6 +246,24 @@ function describeToolError(result) {
 	return JSON.stringify(result);
 }
 
+// Common shape check for every callTool round-trip we make to Cloudup: the
+// JSON-RPC envelope must be successful, the tool result must not be isError,
+// and the text payload must be JSON-parseable. Returns the parsed payload or
+// throws with a tool-name-prefixed message.
+function unwrapToolResponse(toolName, resp) {
+	if (resp.error) {
+		throw new Error(`${toolName} JSON-RPC: ${JSON.stringify(resp.error)}`);
+	}
+	if (!resp.result || resp.result.isError) {
+		throw new Error(`${toolName}: ${describeToolError(resp.result)}`);
+	}
+	const payload = parseToolText(resp.result);
+	if (!payload) {
+		throw new Error(`${toolName} returned unparseable result: ${JSON.stringify(resp.result)}`);
+	}
+	return payload;
+}
+
 async function quickUpload({ callTool, safePath, mime, size, filename, streamId, streamTitle, logger }) {
 	logger(`quick_upload: ${filename} (${size} bytes, ${mime})`);
 	const bytes = await fs.readFile(safePath);
@@ -257,16 +275,7 @@ async function quickUpload({ callTool, safePath, mime, size, filename, streamId,
 	if (streamId) args.stream_id = streamId;
 	if (streamTitle) args.stream_title = streamTitle;
 
-	const resp = await callTool('quick_upload', args);
-	if (resp.error) throw new Error(`quick_upload JSON-RPC: ${JSON.stringify(resp.error)}`);
-	if (!resp.result || resp.result.isError) {
-		throw new Error(`quick_upload: ${describeToolError(resp.result)}`);
-	}
-	const payload = parseToolText(resp.result);
-	if (!payload) {
-		throw new Error(`quick_upload returned unparseable result: ${JSON.stringify(resp.result)}`);
-	}
-	return payload;
+	return unwrapToolResponse('quick_upload', await callTool('quick_upload', args));
 }
 
 async function largeUpload({ callTool, safePath, mime, size, filename, streamId, streamTitle, logger }) {
@@ -275,12 +284,7 @@ async function largeUpload({ callTool, safePath, mime, size, filename, streamId,
 	if (streamId) beginArgs.stream_id = streamId;
 	if (streamTitle) beginArgs.stream_title = streamTitle;
 
-	const beginResp = await callTool('begin_upload', beginArgs);
-	if (beginResp.error) throw new Error(`begin_upload JSON-RPC: ${JSON.stringify(beginResp.error)}`);
-	if (!beginResp.result || beginResp.result.isError) {
-		throw new Error(`begin_upload: ${describeToolError(beginResp.result)}`);
-	}
-	const beginPayload = parseToolText(beginResp.result);
+	const beginPayload = unwrapToolResponse('begin_upload', await callTool('begin_upload', beginArgs));
 	if (!beginPayload?.upload_id || !beginPayload?.s3_url) {
 		throw new Error(
 			`begin_upload response missing upload_id or s3_url: ${JSON.stringify(beginPayload)}`,
@@ -301,24 +305,22 @@ async function largeUpload({ callTool, safePath, mime, size, filename, streamId,
 	});
 	if (!r.ok) {
 		const detail = await r.text().catch(() => '');
-		throw new Error(`S3 PUT failed: HTTP ${r.status} ${detail.slice(0, 200)}`);
+		// 403 typically means the presigned URL has expired; 5xx is transient
+		// S3. In both cases the recovery is to restart the ceremony — call
+		// begin_upload again to mint a fresh URL, don't retry PUT on the old
+		// one. Hint that in the error so the agent doesn't loop on the dead URL.
+		const retryHint =
+			r.status === 403 || r.status >= 500
+				? ' — presigned URL may have expired; retry from begin_upload, not PUT'
+				: '';
+		throw new Error(`S3 PUT failed: HTTP ${r.status} ${detail.slice(0, 200)}${retryHint}`);
 	}
 	logger(`PUT ok (HTTP ${r.status})`);
 
-	const completeResp = await callTool('complete_upload', { upload_id: beginPayload.upload_id });
-	if (completeResp.error) {
-		throw new Error(`complete_upload JSON-RPC: ${JSON.stringify(completeResp.error)}`);
-	}
-	if (!completeResp.result || completeResp.result.isError) {
-		throw new Error(`complete_upload: ${describeToolError(completeResp.result)}`);
-	}
-	const completePayload = parseToolText(completeResp.result);
-	if (!completePayload) {
-		throw new Error(
-			`complete_upload returned unparseable result: ${JSON.stringify(completeResp.result)}`,
-		);
-	}
-	return completePayload;
+	return unwrapToolResponse(
+		'complete_upload',
+		await callTool('complete_upload', { upload_id: beginPayload.upload_id }),
+	);
 }
 
 async function uploadFile({ callTool, filePath, streamId, streamTitle, allowedMime, logger }) {
