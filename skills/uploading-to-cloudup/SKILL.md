@@ -91,6 +91,43 @@ Both errors come back as `isError: true` tool results with a clear message. Surf
 
 - Paste the `markdown` field verbatim into your response. To customize alt text on Path 0, pass an `alt` argument (stripped of `[`/`]`, capped at 200 chars); otherwise it's derived from the filename stem. Path 1 doesn't accept an `alt` argument — edit the returned markdown if you need different alt text.
 - Tell the user the image was uploaded via x402 micropayment. They are paying for it from their configured wallet — this is expected and they should know. Mention the `expires_at`: the `embed` SKU (used by `upload_image`) retains files for 2 years (730 days), so PR-comment embeds stay valid long term; the `quick` and `large` SKUs retain for 30 days. After expiry the embed turns into a broken-image icon with no in-band explanation.
+- If the response includes a `delete_token`, **note it down in your reply** alongside `item_id` so the values stay in your context for at least the next few turns. The token is the only authorization for retracting the upload; once it falls out of context, the file is irrevocable until natural expiry. See "Deleting an upload" below.
+
+## Deleting an upload
+
+Each `upload_image` / `quick_upload` response includes a `delete_token` (and Path 1's `upload` tool returns it verbatim when the bridge picks `embed` or `quick`). Pair it with the `item_id` from the same response and call `mcp__plugin_cloudup_cloudup__delete_upload` to retract the file:
+
+```
+mcp__plugin_cloudup_cloudup__delete_upload({ item_id: "<from upload response>", delete_token: "<from upload response>" })
+```
+
+The call is **free** — no x402 charge, no payment metadata. Success returns the deleted item's `item_id`; a stale token, mismatched item, or already-deleted file returns `isError: true` with a clear message.
+
+### When to delete
+
+**Delete without asking** — proactive cleanup, the share URL hasn't been used yet:
+
+- You uploaded the wrong file (e.g. picked from a directory listing and grabbed the wrong index, captured a screenshot of the wrong tab).
+- After uploading, you realize the file contained content that should have been refused by the sensitive-content gate (credentials, identifying info, internal hostnames, customer data). Treat this like an "oops" — speed matters because the URL is publicly resolvable and could already be in someone's logs.
+- You uploaded a placeholder, scratch file, or test file by accident.
+
+In each case, call `delete_upload` immediately and then tell the user what happened in plain language: "I uploaded `<file>` but realized it contained `<thing>` and have already deleted it. The URL `<url>` will now 404." Don't soften this — the user needs to know the upload happened and was retracted, in case they need to follow up with anyone who might have already seen the URL.
+
+**Ask the user first** — the URL may already be in use:
+
+- You've already shown the user the share URL and they have indicated they're using it (told you "thanks", asked you to put it in a PR comment, etc.).
+- The upload is from an earlier turn and you've referenced the URL in markdown the user has acted on.
+- Time has passed and you can't tell from context whether the URL has been propagated.
+
+A deleted file becomes a 404 in any markdown that already references it — that's worse than a moderately wrong file staying live in most cases. Ask before deleting.
+
+**Never delete silently.** If you delete a file, say so. The user is paying a micropayment per upload and deserves to know which ones live.
+
+### Coverage caveat
+
+`delete_upload` currently works for `embed` and `quick` uploads — the one-step path. The `large` SKU (files >9 MB images or >1.5 MB non-images, where the bridge falls through to `begin_upload` + S3 PUT + `complete_upload`) does **not** yet return a `delete_token`. Those uploads are irrevocable until they expire naturally (30 days). If you're about to upload something that will route to `large` and the content has any chance of being wrong, surface the irrevocability to the user **before** the upload, not after: "This file is >9 MB so it will go via the `large` SKU. That upload can't be retracted — it'll live publicly for 30 days. Confirm before I upload?"
+
+(Two-step delete is tracked as Automattic/cloudup-mono#1488; this caveat will be removed once that lands and the `large` path also emits a `delete_token`.)
 
 ## Costs and failures
 
