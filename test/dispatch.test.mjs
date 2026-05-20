@@ -24,7 +24,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import hook from '../hooks/cloudup.mjs';
+import hook, { callCompleteUploadWithRetry } from '../hooks/cloudup.mjs';
 
 // ---- fixtures ----------------------------------------------------------
 
@@ -166,4 +166,115 @@ test('dispatch: non-image >1.5 MiB → begin_upload (large)', async () => {
 	assert.equal(tool.calls[0].args.size_bytes, size);
 	assert.equal(tool.calls[0].args.mime, 'video/mp4');
 	assert.equal(result.isError, true);
+});
+
+// ---- complete_upload retry / upload_id surfacing -----------------------
+
+function makeCompleteUploadFake({ failTimes }) {
+	const calls = [];
+	let remaining = failTimes;
+	return {
+		calls,
+		async callTool(name, args) {
+			calls.push({ name, args });
+			if (remaining > 0) {
+				remaining--;
+				return {
+					jsonrpc: '2.0',
+					result: {
+						isError: true,
+						content: [{ type: 'text', text: 'transient JSON-RPC blip' }],
+					},
+				};
+			}
+			return {
+				jsonrpc: '2.0',
+				result: {
+					content: [{ type: 'text', text: JSON.stringify({ sku: 'large', direct_url: 'x' }) }],
+				},
+			};
+		},
+	};
+}
+
+test('complete_upload retry: succeeds after one transient failure', async () => {
+	const fake = makeCompleteUploadFake({ failTimes: 1 });
+	const payload = await callCompleteUploadWithRetry(fake.callTool, 'UID-RETRY-1', () => {}, [0]);
+	assert.equal(fake.calls.length, 2);
+	assert.equal(payload.sku, 'large');
+});
+
+test('complete_upload retry: exhausts attempts and throws with upload_id', async () => {
+	const fake = makeCompleteUploadFake({ failTimes: 99 });
+	await assert.rejects(
+		callCompleteUploadWithRetry(fake.callTool, 'UID-STUCK', () => {}, [0, 0]),
+		(err) => {
+			assert.equal(err.upload_id, 'UID-STUCK');
+			assert.equal(err.recoverable_via, 'complete_upload');
+			assert.match(err.message, /UID-STUCK/);
+			assert.match(err.message, /do NOT re-call.*upload\(path\)/);
+			assert.match(err.message, /after 3 attempts/);
+			return true;
+		},
+	);
+	// 1 initial + 2 retries
+	assert.equal(fake.calls.length, 3);
+});
+
+test('complete_upload retry: surfaces upload_id in handle() structuredContent', async () => {
+	// End-to-end through hook.handle(): large file, begin_upload succeeds, S3
+	// PUT is stubbed via globalThis.fetch, complete_upload fails forever, the
+	// hook surfaces upload_id in structuredContent so a smarter caller could
+	// recover without re-paying for begin_upload.
+	const p = path.join(tmpRoot, 'stuck.png');
+	await fs.writeFile(p, buildFixture(PNG_HEADER, 9 * 1024 * 1024 + 1));
+
+	const calls = [];
+	const callTool = async (name, args) => {
+		calls.push({ name, args });
+		if (name === 'begin_upload') {
+			return {
+				jsonrpc: '2.0',
+				result: {
+					content: [
+						{
+							type: 'text',
+							text: JSON.stringify({
+								upload_id: 'UID-E2E',
+								s3_url: 'https://s3.example.invalid/put-here',
+							}),
+						},
+					],
+				},
+			};
+		}
+		// complete_upload always fails.
+		return {
+			jsonrpc: '2.0',
+			result: { isError: true, content: [{ type: 'text', text: 'still failing' }] },
+		};
+	};
+
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => '' });
+	let result;
+	try {
+		result = await hook.handle({
+			name: 'upload',
+			args: { path: p },
+			callTool,
+			logger: () => {},
+		});
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+
+	assert.equal(result.isError, true);
+	assert.equal(result.structuredContent.upload_id, 'UID-E2E');
+	assert.equal(result.structuredContent.recoverable_via, 'complete_upload');
+	assert.match(result.content[0].text, /UID-E2E/);
+	// 1 begin_upload + 3 complete_upload attempts (initial + 2 retries from the
+	// default COMPLETE_UPLOAD_BACKOFFS_MS array). The retries here use the
+	// production backoff (~1s total) — acceptable for one e2e test.
+	assert.equal(calls.filter((c) => c.name === 'complete_upload').length, 3);
 });

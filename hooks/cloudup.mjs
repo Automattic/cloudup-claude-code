@@ -231,8 +231,9 @@ export async function validateUploadPath(inputPath, options = {}) {
 	return { path: resolved, mime, size: stat.size };
 }
 
-// Tests need detectMime / parseAllowedMime / mimeAllowed too — re-export.
-export { detectMime, parseAllowedMime, mimeAllowed };
+// Tests need detectMime / parseAllowedMime / mimeAllowed and the
+// complete_upload retry helper too — re-export.
+export { detectMime, parseAllowedMime, mimeAllowed, callCompleteUploadWithRetry };
 
 // ---- Upload flow -------------------------------------------------------
 
@@ -272,6 +273,45 @@ function unwrapToolResponse(toolName, resp) {
 		throw new Error(`${toolName} returned unparseable result: ${JSON.stringify(resp.result)}`);
 	}
 	return payload;
+}
+
+// complete_upload sits on the wrong side of the value-transferred boundary:
+// by the time we call it, the bytes are already in S3 and we've paid for the
+// large SKU. A transient failure here that bubbles up as a tool error makes
+// the agent's natural retry — re-calling upload(path) — pay AGAIN for
+// begin_upload while the previous bytes sit stranded. So we retry in-hook,
+// and on final failure throw an error that carries upload_id so a human (or
+// future smarter caller) can recover via complete_upload directly.
+const COMPLETE_UPLOAD_BACKOFFS_MS = [200, 800];
+
+async function callCompleteUploadWithRetry(callTool, upload_id, logger, backoffsMs = COMPLETE_UPLOAD_BACKOFFS_MS) {
+	const attempts = backoffsMs.length + 1;
+	let lastError;
+	for (let i = 0; i < attempts; i++) {
+		if (i > 0) {
+			await new Promise((r) => setTimeout(r, backoffsMs[i - 1]));
+			logger(`complete_upload retry ${i}/${attempts - 1} (upload_id=${upload_id})`);
+		}
+		try {
+			return unwrapToolResponse(
+				'complete_upload',
+				await callTool('complete_upload', { upload_id }),
+			);
+		} catch (e) {
+			lastError = e;
+			logger(`complete_upload attempt ${i + 1} failed: ${e.message}`);
+		}
+	}
+	const err = new Error(
+		`complete_upload failed after ${attempts} attempts (S3 PUT succeeded). ` +
+			`upload_id: ${upload_id}. Last error: ${lastError.message}. ` +
+			`Recovery: retry complete_upload with this upload_id; do NOT re-call ` +
+			`upload(path) — that would re-run begin_upload and pay again on bytes ` +
+			`already in S3.`,
+	);
+	err.upload_id = upload_id;
+	err.recoverable_via = 'complete_upload';
+	throw err;
 }
 
 async function embedUpload({ callTool, safePath, mime, size, filename, streamTitle, logger }) {
@@ -347,10 +387,7 @@ async function largeUpload({ callTool, safePath, mime, size, filename, streamId,
 	}
 	logger(`PUT ok (HTTP ${r.status})`);
 
-	return unwrapToolResponse(
-		'complete_upload',
-		await callTool('complete_upload', { upload_id: beginPayload.upload_id }),
-	);
+	return callCompleteUploadWithRetry(callTool, beginPayload.upload_id, logger);
 }
 
 async function uploadFile({ callTool, filePath, streamId, streamTitle, allowedMime, logger }) {
@@ -428,10 +465,17 @@ export default {
 			};
 		} catch (e) {
 			const msg = `upload: ${e.message}`;
+			const structured = { error: msg };
+			// Surface recovery handles attached by callCompleteUploadWithRetry so
+			// a smarter caller can finalize the upload without paying again. The
+			// plaintext error already mentions upload_id; this just makes it
+			// programmatically accessible.
+			if (e.upload_id) structured.upload_id = e.upload_id;
+			if (e.recoverable_via) structured.recoverable_via = e.recoverable_via;
 			return {
 				isError: true,
 				content: [{ type: 'text', text: msg }],
-				structuredContent: { error: msg },
+				structuredContent: structured,
 			};
 		}
 	},
