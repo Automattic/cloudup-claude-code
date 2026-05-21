@@ -9,7 +9,7 @@
     {
       "name": "cloudup",
       "description": "Upload images to Cloudup via x402 micropayments",
-      "version": "0.6.1",
+      "version": "0.6.2",
       "source": "./",
       "author": {
         "name": "Steve Dufresne",
