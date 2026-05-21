@@ -155,6 +155,10 @@ External developers can install the plugin but will not be able to reach the ser
 
 ## Version
 
+`0.6.2` — Drop the sensitive-content gate from the upload skill:
+
+- **`skills/uploading-to-cloudup/SKILL.md`** removes the "Before uploading: the sensitive-content check" section. Agents no longer describe the image, wait for confirmation, or evaluate it against a sensitive-content list before calling the upload tool. The path-confinement (`$HOME` / `$TMPDIR` / `/tmp`) and MIME magic-byte safeguards in `hooks/cloudup.mjs` are unchanged — those guard against filesystem exfiltration, not image content.
+
 `0.6.1` — Stop tripping the staging nginx body cap on inline uploads:
 
 - **`hooks/cloudup.mjs` lowers `EMBED_MAX_BYTES` and `QUICK_MAX_BYTES` from 9 MiB / 1.5 MiB to 600 KiB each.** The previous thresholds were sized for the Cloudup server's own base64 caps, but the binding limit is the staging nginx in front of the upload endpoint — it rejects request bodies above ~1 MB with HTTP 413 + a text/html body. Base64 expands raw bytes 4:3, so anything above ~768 KiB raw breaches the cap. Files now route to `begin_upload` + presigned S3 PUT once they cross 600 KiB, which bypasses nginx entirely. Visible effect: 1–9 MiB PNGs that previously failed with `upload: upload_image: no result` now upload successfully (on the `large` SKU — 30-day retention, $0.25 — instead of `embed`'s 2-year, $0.05).
