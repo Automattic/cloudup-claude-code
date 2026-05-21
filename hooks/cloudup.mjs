@@ -16,9 +16,9 @@
  *   2. Pick a SKU. The hook routes by mime, size, and whether stream_id is
  *      set — preferring retention over raw cost for the common PR-comment
  *      screenshot case:
- *         image, no stream_id, ≤9 MiB → upload_image  (embed, 2-year,  $0.05)
- *         ≤1.5 MiB                    → quick_upload  (quick, 30-day,  $0.01)
- *         otherwise                   → begin_upload  (large, 30-day,  $0.25)
+ *         image, no stream_id, ≤600 KiB → upload_image (embed, 2-year, $0.05)
+ *         ≤600 KiB                      → quick_upload (quick, 30-day, $0.01)
+ *         otherwise                     → begin_upload (large, 30-day, $0.25)
  *      See the EMBED_MAX_BYTES / QUICK_MAX_BYTES constants below and the
  *      uploadFile() dispatch for the authoritative table.
  *
@@ -37,21 +37,27 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
-// Per-SKU max payload sizes. The Cloudup server enforces base64 length caps on
-// the inline upload tools; we stay a comfortable margin below them so a file
-// at the threshold doesn't bump into the ceiling after base64 expansion (4:3).
+// Per-SKU max payload sizes. The binding limit isn't the Cloudup server's own
+// base64 caps (those are several MiB) — it's the nginx in front of the upload
+// endpoint, which rejects request bodies above its `client_max_body_size`
+// (~1 MB by default) with HTTP 413 and a text/html body. mpp-remote uses
+// `validateStatus: () => true` and returns the raw body as `r.data`, so the
+// 413+HTML surfaces here as a string where we expected an MCP envelope; the
+// bridge then reports "no result" with no actionable context.
 //
-// upload_image (`embed` SKU, 2-year retention) caps content_base64 at ~13.98M
-// chars → ~10.5 MiB binary. 9 MiB leaves headroom.
-//
-// quick_upload (`quick` SKU, 30-day retention) caps content_base64 at ~2.8M
-// chars → ~2 MiB binary. 1.5 MiB leaves headroom.
+// Base64 expands bytes 4:3, so a raw file of N bytes becomes a JSON-RPC body
+// of ~4N/3 chars plus envelope overhead. At the 1 MB nginx ceiling, that's
+// ~768 KiB raw before we hit 413. We keep both inline-upload thresholds at
+// 600 KiB to leave comfortable margin for envelope/wrapping overhead and any
+// minor nginx-config drift between staging deployments.
 //
 // Anything larger than these (or any image when stream_id is set, since
 // upload_image doesn't accept stream_id) falls through to begin_upload +
-// S3 PUT + complete_upload (`large` SKU, 30-day retention).
-const EMBED_MAX_BYTES = 9 * 1024 * 1024;
-const QUICK_MAX_BYTES = 1536 * 1024; // 1.5 MiB
+// S3 PUT + complete_upload (`large` SKU, 30-day retention) — that path
+// uploads bytes directly to a presigned S3 URL, bypassing the nginx cap
+// entirely.
+const EMBED_MAX_BYTES = 600 * 1024;
+const QUICK_MAX_BYTES = 600 * 1024;
 
 // ---- Safeguards: MIME sniff --------------------------------------------
 
@@ -271,11 +277,11 @@ function describeToolError(result) {
 // and the text payload must be JSON-parseable. Returns the parsed payload or
 // throws with a tool-name-prefixed message.
 function unwrapToolResponse(toolName, resp) {
-	if (resp.error) {
+	if (resp && resp.error) {
 		throw new Error(`${toolName} JSON-RPC: ${JSON.stringify(resp.error)}`);
 	}
-	if (!resp.result || resp.result.isError) {
-		throw new Error(`${toolName}: ${describeToolError(resp.result)}`);
+	if (!resp || !resp.result || resp.result.isError) {
+		throw new Error(`${toolName}: ${describeToolError(resp && resp.result)}`);
 	}
 	const payload = parseToolText(resp.result);
 	if (!payload) {
@@ -406,11 +412,14 @@ async function uploadFile({ callTool, filePath, streamId, streamTitle, allowedMi
 
 	// SKU routing prefers retention over raw cost for the common case
 	// (image headed for a PR-comment markdown embed):
-	//   image, no stream_id, ≤9 MiB  → upload_image (embed, 2-year, $0.05)
-	//   ≤1.5 MiB                     → quick_upload  (quick, 30-day, $0.01)
-	//   otherwise                    → begin_upload (large, 30-day, $0.25)
+	//   image, no stream_id, ≤600 KiB → upload_image (embed, 2-year, $0.05)
+	//   ≤600 KiB                      → quick_upload (quick, 30-day, $0.01)
+	//   otherwise                     → begin_upload (large, 30-day, $0.25)
 	// upload_image doesn't take stream_id, so callers that pass one skip embed
-	// and land in quick or large instead.
+	// and land in quick or large instead. The 600 KiB cutoff isn't a Cloudup
+	// limit — it's the staging nginx `client_max_body_size` (~1 MB), which
+	// rejects base64-inflated bodies above ~768 KiB raw; we route larger files
+	// to largeUpload's presigned S3 PUT to bypass that.
 	const isImage = mime.startsWith('image/');
 	if (isImage && !streamId && size <= EMBED_MAX_BYTES) return embedUpload(ctx);
 	if (size <= QUICK_MAX_BYTES) return quickUpload(ctx);
@@ -426,13 +435,16 @@ export default {
 			name: 'upload',
 			description:
 				'Upload a local file to Cloudup in a single call and get a share URL. ' +
-				'The bridge picks the SKU automatically: images up to ~9 MB go via ' +
+				'The bridge picks the SKU automatically: images up to ~600 KiB go via ' +
 				'upload_image (embed SKU, 2-year retention — good for PR comments), ' +
 				'other small files via quick_upload (30-day, $0.01), anything larger ' +
-				'via begin_upload + S3 PUT + complete_upload (30-day, $0.25). The path ' +
-				'is realpath-resolved and must live under $HOME, $TMPDIR, or /tmp; the file type ' +
-				'is sniffed from magic bytes (default allowlist: image/*; override ' +
-				'with CLOUDUP_ALLOWED_MIME). Files that fail either check are refused.',
+				'via begin_upload + S3 PUT + complete_upload (30-day, $0.25). The ' +
+				'~600 KiB inline cutoff is set by the upload endpoint\'s nginx body ' +
+				'limit, not Cloudup itself — larger files take the S3-PUT path which ' +
+				'bypasses it. The path is realpath-resolved and must live under $HOME, ' +
+				'$TMPDIR, or /tmp; the file type is sniffed from magic bytes (default ' +
+				'allowlist: image/*; override with CLOUDUP_ALLOWED_MIME). Files that ' +
+				'fail either check are refused.',
 			inputSchema: {
 				type: 'object',
 				properties: {

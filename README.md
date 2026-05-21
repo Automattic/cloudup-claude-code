@@ -155,6 +155,11 @@ External developers can install the plugin but will not be able to reach the ser
 
 ## Version
 
+`0.6.1` — Stop tripping the staging nginx body cap on inline uploads:
+
+- **`hooks/cloudup.mjs` lowers `EMBED_MAX_BYTES` and `QUICK_MAX_BYTES` from 9 MiB / 1.5 MiB to 600 KiB each.** The previous thresholds were sized for the Cloudup server's own base64 caps, but the binding limit is the staging nginx in front of the upload endpoint — it rejects request bodies above ~1 MB with HTTP 413 + a text/html body. Base64 expands raw bytes 4:3, so anything above ~768 KiB raw breaches the cap. Files now route to `begin_upload` + presigned S3 PUT once they cross 600 KiB, which bypasses nginx entirely. Visible effect: 1–9 MiB PNGs that previously failed with `upload: upload_image: no result` now upload successfully (on the `large` SKU — 30-day retention, $0.25 — instead of `embed`'s 2-year, $0.05).
+- The "no result" error itself came from mpp-remote's `validateStatus: () => true` swallowing the 413 and passing nginx's HTML body through as the tool result — see [tellyworth/mpp-remote](https://github.com/tellyworth/mpp-remote) for the upstream fix (non-2xx or non-JSON Content-Type should be a hard error there, not a string return).
+
 `0.6.0` — Single-call `upload` tool plus automatic A8c SOCKS proxy detection:
 
 - **`hooks/cloudup.mjs`** added as an mpp-remote hook (`scripts/cloudup-server.sh` now passes `--hook ${PLUGIN_ROOT}/hooks/cloudup.mjs`). Exposes a single `upload(path)` MCP tool that wraps the three-step `begin_upload` → S3 PUT → `complete_upload` ceremony into one agent-visible call. The bridge picks the SKU automatically by sniffed MIME + size: images up to ~9 MB go via `upload_image` (`embed` SKU, 2-year retention — chosen so PR-comment screenshots survive); non-image small files via `quick_upload` ($0.01, 30-day); larger via `begin_upload` ($0.25, 30-day).
