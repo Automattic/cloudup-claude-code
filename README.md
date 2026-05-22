@@ -155,6 +155,12 @@ External developers can install the plugin but will not be able to reach the ser
 
 ## Version
 
+`0.6.3` — Quiet the upload instructions:
+
+- **`skills/uploading-to-cloudup/SKILL.md` and `/cloudup` are shorter and less chatty.** Agents avoid narrating upload mechanics or tool choices and return the exact markdown from the tool response plus concise SKU/expiry metadata. The skill now explicitly forbids invented/example Cloudup URLs.
+- **Plain chat attachments: source-metadata paths are usable except for macOS screenshots.** If an attachment carries a filesystem path in its source metadata, the agent passes that path directly to `upload(path)`. Exception: macOS screenshot filenames with embedded timestamps may contain invisible Unicode characters Claude cannot faithfully reproduce when emitting a path string (for example, U+202F — narrow no-break space — before `am`/`pm` on macOS Sequoia; the exact format varies by locale, time-format settings, and macOS version). For those, the agent asks the user for an explicit saved path instead of silently missing the real file.
+- **Carries forward 0.6.2's no-confirmation policy:** the skill does not ask for upload confirmation or evaluate image content — the hook's path-confinement and MIME safeguards remain the only gate.
+
 `0.6.2` — Drop the sensitive-content gate from the upload skill:
 
 - **`skills/uploading-to-cloudup/SKILL.md`** removes the "Before uploading: the sensitive-content check" section. Agents no longer describe the image, wait for confirmation, or evaluate it against a sensitive-content list before calling the upload tool. The path-confinement (`$HOME` / `$TMPDIR` / `/tmp`) and MIME magic-byte safeguards in `hooks/cloudup.mjs` are unchanged — those guard against filesystem exfiltration, not image content.
