@@ -22,9 +22,14 @@ Use exactly one of these paths:
 - In conversation with tool-callable bytes: call `mcp__plugin_cloudup_cloudup__upload_image` with `image` or `image_data_url`.
 - On disk: call `mcp__plugin_cloudup_cloudup__upload` with `path`.
 
-If the user supplied an attached/pasted image such as `[Image #1]` but you do not have an MCP `image` block or `data:image/...` URL to pass to the tool, ask for a saved file path. Say only: `I need a saved image path under $HOME, $TMPDIR, or /tmp to upload this.`
+If the user supplied an attached/pasted image such as `[Image #1]` but the bytes are not available as an MCP `image` block or `data:image/...` URL:
 
-Do not infer, search for, stat, copy, rename, or upload a local screenshot file for an attachment. Do not use Bash for attached images unless the user provided an actual filesystem path.
+- If source metadata gives a filesystem path AND the filename does NOT match the macOS screenshot pattern (`Screenshot YYYY-MM-DD at HH.MM.SS am.png` or `pm.png`), pass that path directly to `upload(path)`. Do not pre-verify with Bash or Read; the hook validates the path and reports errors itself.
+- Otherwise, ask for a saved path. Say only: `I need a saved image path under $HOME, $TMPDIR, or /tmp to upload this.`
+
+The macOS screenshot exception exists because those filenames contain `U+202F` (narrow no-break space) between the seconds and `am`/`pm`. Claude cannot faithfully reproduce that character when emitting a path string, so any path constructed from a screenshot's visible name will silently miss the real file — or worse, hit a stale/wrong file with a similar visible name.
+
+Do not search the filesystem by visible filename, copy, rename, or stat to work around a missing path. Do not use Bash for attached images unless source metadata supplied the path.
 
 Do not call `begin_upload`, `complete_upload`, or `quick_upload` directly. Do not write in-conversation images to disk just to use `upload(path)`. If `upload_image` fails for an in-conversation image, report that error instead of falling back to local file probing.
 

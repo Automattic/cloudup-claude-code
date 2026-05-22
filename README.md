@@ -157,7 +157,9 @@ External developers can install the plugin but will not be able to reach the ser
 
 `0.6.3` — Quiet the upload instructions:
 
-- **`skills/uploading-to-cloudup/SKILL.md` and `/cloudup` are shorter and less chatty.** Agents avoid narrating upload mechanics or tool choices and return the exact markdown from the tool response plus concise SKU/expiry metadata. The skill now explicitly forbids invented/example Cloudup URLs and filesystem probing/temp-file fallback for attachments. Plain chat attachments must have tool-callable bytes; otherwise the agent asks for a saved path. Carries forward 0.6.2's no-confirmation policy: the skill does not ask for upload confirmation or evaluate image content — the hook's path-confinement and MIME safeguards remain the only gate.
+- **`skills/uploading-to-cloudup/SKILL.md` and `/cloudup` are shorter and less chatty.** Agents avoid narrating upload mechanics or tool choices and return the exact markdown from the tool response plus concise SKU/expiry metadata. The skill now explicitly forbids invented/example Cloudup URLs.
+- **Plain chat attachments: source-metadata paths are usable except for macOS screenshots.** If an attachment carries a filesystem path in its source metadata, the agent passes that path directly to `upload(path)`. Exception: macOS screenshot filenames (`Screenshot YYYY-MM-DD at HH.MM.SS am.png` / `pm.png`) contain a `U+202F` (narrow no-break space) between the seconds and `am`/`pm` that Claude cannot faithfully reproduce when emitting a path string; for those, the agent asks the user for an explicit saved path instead of silently missing the real file.
+- **Carries forward 0.6.2's no-confirmation policy:** the skill does not ask for upload confirmation or evaluate image content — the hook's path-confinement and MIME safeguards remain the only gate.
 
 `0.6.2` — Drop the sensitive-content gate from the upload skill:
 
