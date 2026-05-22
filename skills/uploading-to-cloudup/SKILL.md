@@ -24,10 +24,10 @@ Use exactly one of these paths:
 
 If the user supplied an attached/pasted image such as `[Image #1]` but the bytes are not available as an MCP `image` block or `data:image/...` URL:
 
-- If source metadata gives a filesystem path AND the filename does NOT match the macOS screenshot pattern (`Screenshot YYYY-MM-DD at HH.MM.SS am.png` or `pm.png`), pass that path directly to `upload(path)`. Do not pre-verify with Bash or Read; the hook validates the path and reports errors itself.
+- If source metadata gives a filesystem path AND the filename does NOT look like a macOS screenshot with a timestamp in the name, pass that path directly to `upload(path)`. Do not pre-verify with Bash or Read; the hook validates the path and reports errors itself.
 - Otherwise, ask for a saved path. Say only: `I need a saved image path under $HOME, $TMPDIR, or /tmp to upload this.`
 
-The macOS screenshot exception exists because those filenames contain `U+202F` (narrow no-break space) between the seconds and `am`/`pm`. Claude cannot faithfully reproduce that character when emitting a path string, so any path constructed from a screenshot's visible name will silently miss the real file — or worse, hit a stale/wrong file with a similar visible name.
+The macOS-screenshot exception exists because timestamp-formatted screenshot filenames may contain invisible Unicode characters that Claude cannot faithfully reproduce when emitting a path string — for example, U+202F (narrow no-break space) before `am`/`pm` on macOS Sequoia. The exact format varies by locale, time-format settings, and macOS version, but the failure mode is the same: a transcribed path will silently miss the real file, or hit a stale/wrong file with a similar visible name. Recognize macOS screenshots by cues like a "Screenshot" prefix (in any locale), a date/time-shaped pattern in the name, or a path under `~/Screenshots`/`~/Desktop`. Err on the side of asking when uncertain.
 
 Do not search the filesystem by visible filename, copy, rename, or stat to work around a missing path. Do not use Bash for attached images unless source metadata supplied the path.
 
