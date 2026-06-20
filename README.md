@@ -128,8 +128,9 @@ You only need USDC — no ETH for gas. The server submits the meta-transaction o
 ## Troubleshooting
 
 - **`/mcp` doesn't list `cloudup` at all** — Most often a duplicate-suppression collision: an existing manually-configured MCP server (in `~/.claude.json` or via `claude mcp add`) has the same `command + args` as the plugin's, and Claude Code drops the plugin's silently. Run `claude mcp list` to find duplicates, then `claude mcp remove <name>`. See step 5.
-- **`/mcp` shows `cloudup` as "Failed to connect"** — On Path A: `paw` isn't installed (`npm i -g @privy-io/agent-wallet-cli`), or the user isn't logged in (`paw login`), or `npx`/`paw` aren't on PATH for non-interactive shells (add their dir to `~/.zshenv`). On Path B: no key in Keychain (`scripts/cloudup-key.sh status` should say "Key stored"). On Path C: `CLOUDUP_WALLET_KEY` malformed. The wrapper exits with a specific error message in each case.
+- **`/mcp` shows `cloudup` as "Failed to connect"** — On Path A: `paw` isn't installed (`npm i -g @privy-io/agent-wallet-cli`), or the user isn't logged in (`paw login`), or `npx`/`paw` aren't on PATH for non-interactive shells (add their dir to `~/.zshenv`). On Path B: no key in Keychain (`scripts/cloudup-key.sh status` should say "Key stored"). On Path C: `CLOUDUP_WALLET_KEY` malformed. The wrapper exits with a specific error message in each case. **A8c staff on staging:** if wallet provisioning succeeded but `/mcp` still shows "Failed to connect", `CLOUDUP_PROXY` probably isn't set in the environment the MCP server launched with. The staging endpoint IP-gates non-A8c traffic and returns a 403 from nginx with no other signal — see "Reaching the staging endpoint" below.
 - **"connection timed out after 30000ms"** — The MCP server is reachable but the upstream Cloudup endpoint isn't. Your A8c SSH tunnel (`ssh -D 8080 …`) isn't up on `localhost:8080`. Bring it back up — see the staging-endpoint section below.
+- **"Unable to connect to API (UnsupportedProxyProtocol)"** — You set `HTTPS_PROXY=socks5h://…` somewhere. Node's native axios proxy support handles `http(s)://` only — for socks you must use `CLOUDUP_PROXY` (which gets passed to mpp-remote, which knows socks), not `HTTPS_PROXY`. Unset the latter.
 - **"Spending cap exceeded"** — A single upload would exceed `CLOUDUP_MAX_USD`. Raise it (with care) or use a smaller file.
 - **"Insufficient balance"** — Fund the wallet address with more testnet USDC on Base Sepolia (`paw fund` or a faucet).
 - **`refusing to upload … not under $HOME, $TMPDIR, or /tmp`** — The bridge resolves the path with `realpath` (so symlinks are followed) and only allows uploads from your home directory, the OS temp directory (`$TMPDIR` — `/var/folders/...` on macOS, often `/tmp` on Linux), or `/tmp` itself. Intentional defense against an agent being induced to upload from elsewhere on the filesystem (`~/.ssh/id_rsa`, `/etc/...`, etc.). Move the file under one of those roots and retry, or upload via Path 0 (paste the image into chat) if it's already on screen.
@@ -137,7 +138,19 @@ You only need USDC — no ETH for gas. The server submits the meta-transaction o
 
 ## Reaching the staging endpoint (A8c-only for now)
 
-The current default endpoint (`api.stage-cloudup.com`) is IP-restricted to the Automattic network. To reach it from a laptop, set `CLOUDUP_PROXY` in your shell environment **before** starting Claude Code (the wrapper reads it at MCP launch):
+The current default endpoint (`api.stage-cloudup.com`) is IP-restricted to the Automattic network. To reach it from a laptop, set `CLOUDUP_PROXY` somewhere the MCP server's launch environment will pick it up. Two options, pick one:
+
+**Preferred — `~/.claude/settings.json`** under `env`. Survives terminal restarts and applies regardless of which terminal launched Claude:
+
+```json
+{
+  "env": {
+    "CLOUDUP_PROXY": "socks5h://127.0.0.1:8080"
+  }
+}
+```
+
+**Alternative — shell export** before starting Claude Code (the wrapper reads it at MCP launch):
 
 ```
 export CLOUDUP_PROXY=socks5h://127.0.0.1:8080
@@ -146,6 +159,8 @@ export CLOUDUP_PROXY=socks5h://127.0.0.1:8080
 That's the conventional A8c SOCKS5 forwarder (`ssh -D 8080 <a8c-bastion>`). Keep the SSH tunnel up and the plugin will route upstream calls through it.
 
 Use `socks5h://` rather than `socks5://` so DNS resolution happens server-side — internal cloudup hostnames may not be resolvable from your machine.
+
+**Don't set `HTTPS_PROXY=socks5h://…`** as a shortcut. Node's native axios proxy support handles `http(s)://` only and throws `UnsupportedProxyProtocol` on socks. `CLOUDUP_PROXY` reaches `mpp-remote` specifically, which wires `SocksProxyAgent` explicitly.
 
 `CLOUDUP_PROXY` is **opt-in**. External users (or A8c users hitting a public endpoint when one exists) leave it unset and traffic goes direct.
 
